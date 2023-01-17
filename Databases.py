@@ -90,13 +90,6 @@ class Database:
         con.commit()
         con.close()
 
-    def input_into_column(self, c_id, *args):  # Not sure what this is for
-        self.column_classes[c_id].insert_into(self.name, args)
-        self.row_count += 1
-        for column in self.column_classes:
-            if column != self.column_classes[c_id] and isinstance(column, ColumnList):
-                column.add_default_to_link_table(self.name, self.row_count)
-
     def update_column(self, c_id, r_id, old_value, new_value):
         self.column_classes[c_id].update(self.name, old_value, new_value, r_id)
 
@@ -115,23 +108,29 @@ class Database:
         return ["id"] + [column.column_name[2:-1] for column in self.column_classes]
 
     def autofill_query(self, search):
-        case = "CASE "
-        col = "FROM Main JOIN "
+        autofill = []
         con = sql.connect(self.name)
         cur = con.cursor()
         for column in self.column_classes:
-            case += f"WHEN {column.table_name}.{column.column_name} LIKE '{search}%' " \
-                    f"THEN TRIM({column.table_name}.{column.column_name}, ' %') "
-            if column.table_name == "Main":
-                continue
-            col += f"{column.table_name} JOIN "
-        autofill = cur.execute(f'SELECT DISTINCT {case} END C {col[:-6]} '
-                               f'WHERE C IS NOT NULL AND C != "{search}" ORDER BY C').fetchall()
+            col_fil = cur.execute(f'SELECT DISTINCT {column.column_name} FROM {column.table_name} '
+                                  f'WHERE {column.column_name} LIKE "{search}%" '
+                                  f'AND {column.column_name} NOT LIKE "{search}"').fetchall()
+            autofill += col_fil
         print("auto", autofill)
+        con.close()
+        return autofill
+
+    def list_column_query(self, col):
+        table = [column.table_name for column in self.column_classes if column.column_name == col]
+        con = sql.connect(self.name)
+        cur = con.cursor()
+        autofill = cur.execute(f"SELECT DISTINCT {col} FROM {table[0]} "
+                               f"WHERE {col} IS NOT NULL").fetchall()
+        con.close()
         return autofill
 
     def general_query(self, start=int, end=int, search=False):  # search holds the text to search for. start/end will
-        select_table_columns = ''                               # not be given if search is given
+        select_table_columns = ''  # not be given if search is given
         joined_tables = ''
         on_parameters = ''
         where = 'WHERE ('
@@ -195,7 +194,7 @@ class ColumnInteger:
         con.commit()
         con.close()
 
-    def update(self, db_name, old_value, new_value, r_id):
+    def update(self, db_name, _, new_value, r_id):
         con = sql.connect(db_name)
         cur = con.cursor()
         if not new_value:
@@ -266,8 +265,15 @@ class ColumnText:
                         f'FROM {self.table_name} WHERE {self.table_name}.{self.column_name} = "{new_value}") '
                         f'WHERE _id = {r_id}')
         else:
-            cur.execute(f'UPDATE {self.table_name} SET {self.column_name} = (?) '
-                        f'WHERE {self.column_name} = "{old_value}"', (new_value,))
+            try:
+                cur.execute(f'UPDATE {self.table_name} SET {self.column_name} = (?) '
+                            f'WHERE {self.column_name} = "{old_value}"', (new_value,))
+            except:
+                cur.execute(f'UPDATE Main SET {self.table_name.casefold()}_id = (SELECT _rowid_ '
+                            f'FROM {self.table_name} WHERE {self.table_name}.{self.column_name} = "{new_value}") '
+                            f'WHERE _id = {r_id}')
+                if temp_old_value != "NULL":
+                    cur.execute(f'DELETE FROM {self.table_name} WHERE {self.column_name} = {temp_old_value}')
         con.commit()
         con.close()
 
@@ -297,7 +303,7 @@ class ColumnList:
         con.commit()
         con.close()
 
-    def add_default_to_link_table(self, db_name, row_number): # not sure what this is for either
+    def add_default_to_link_table(self, db_name, row_number):  # not sure what this is for either
         con = sql.connect(db_name)
         cur = con.cursor()
         cur.execute(f'INSERT INTO {self.link_table_name} (_main_id) VALUES ({row_number})')
@@ -307,6 +313,8 @@ class ColumnList:
     def update(self, db_name, old_value, new_value, r_id):
         if new_value is None:
             new_value = ''
+        if old_value == new_value:
+            return
         new_value = new_value.split(", ")
         old_value = old_value.split(", ")
         o_value, n_value = [value for value in old_value if value not in new_value], \
@@ -355,9 +363,6 @@ class ColumnList:
 
         con = sql.connect(db_name)
         cur = con.cursor()
-        if not o_value:
-            old_value = old_value.split(", ")
-            o_value = old_value
         if old_value != [''] and old_value is not None:
             for v in o_value:
                 temp = count_values_uses(v)
