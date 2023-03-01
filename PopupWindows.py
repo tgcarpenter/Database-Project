@@ -5,6 +5,8 @@ from PyQt6.QtWidgets import QLineEdit, QPushButton, QWidget, QLabel, QListWidget
     QAbstractItemView, QStyledItemDelegate, QStyleOptionViewItem, QMessageBox
 
 from Databases import Database
+from MyWidgets import MySearchLineEdit
+from UniversalFunctions import get_signal
 
 
 class DbNameInputWindow(QWidget):
@@ -13,7 +15,6 @@ class DbNameInputWindow(QWidget):
 
         self.window = window
         self.setWindowTitle('Create Database')
-        self.setStyleSheet('background-color: light grey')
         self.setFixedSize(400, 100)
         self.window.center_on_mainwindow(self)
 
@@ -49,16 +50,24 @@ class DbNameInputWindow(QWidget):
 
         def enter_connection():
             if input_box.text() != '':
+                if self.enter.isSignalConnected(get_signal(self.enter, "clicked")):
+                    self.enter.disconnect()
+
                 self.enter.clicked.connect(lambda: self.create_database(input_box.text()))
             else:
                 self.enter.disconnect()
 
-    def create_database(self, name):  # needs testing
+    def create_database(self, name):  # this should probably be in mainwindow class
+        if self.window.current_database is not None:
+            close = self.window.open_save_messagebox()
+            if not close:
+                return
+            self.window.read_settings()
         self.window.databases.append(Database(name))
         self.window.databases_names[name] = self.window.database_amount
         self.window.database_amount += 1
         self.window.change_current_database(name)
-        self.window.insert_new_column.setEnabled(True)
+        self.window.toolbar.insert_new_column.setEnabled(True)
         self.enter.disconnect()
         self.close()
 
@@ -81,62 +90,97 @@ class OpenDbWindow(QWidget):
         new_db_button.clicked.connect(self.close)
         new_db_button.clicked.connect(self.window.make_add_database_window)
 
+        self.del_db_button = QPushButton("Delete Database")
+        self.del_db_button.setMaximumWidth(140)
+        self.del_db_button.setEnabled(False)
+        self.del_db_button.clicked.connect(self.delete_database)
+
         self.spacer = QWidget()
         self.spacer.setMaximumHeight(24)
         self.spacer.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
 
-        list_view = QListWidget()
+        self.list_view = QListWidget()
         header = QLabel("Select Database:")
         temp_databases = list(window.databases_names.keys())
         temp_databases.reverse()
 
         try:
             for database in temp_databases:
-                list_view.addItem(database)
+                self.list_view.addItem(database)
         except:
             pass
 
-        list_view.itemDoubleClicked.connect(lambda: current_item())
+        self.list_view.itemDoubleClicked.connect(self.current_item)
 
-        enter = QPushButton('Enter', self)
-        enter.setFixedWidth(100)
+        self.enter = QPushButton('Enter', self)
+        self.enter.setFixedWidth(100)
 
-        list_view.itemClicked.connect(lambda: enter_connection())
-
-        def enter_connection():
-            enter.clicked.connect(lambda: current_item())
-            enter.clicked.connect(self.close)  # <- maybe redundant
+        self.list_view.itemClicked.connect(self.enter_connection)
 
         cancel = QPushButton('Cancel', self)
         cancel.setFixedWidth(100)
         cancel.clicked.connect(self.close)
 
         self.filter = self.window.EnterKeyFilter()
-        list_view.installEventFilter(self.filter)
-        self.filter.enterKeyPressed.connect(enter.click)
+        self.list_view.installEventFilter(self.filter)
+        self.filter.enterKeyPressed.connect(self.enter.click)
 
         layout = QVBoxLayout()
         layout2 = QHBoxLayout()
         layout2.addWidget(header)
         layout2.addWidget(self.spacer)
+        layout2.addWidget(self.del_db_button)
         layout2.addWidget(new_db_button)
 
         layout3 = QHBoxLayout()
-        layout3.addWidget(enter)
+        layout3.addWidget(self.enter)
         layout3.addWidget(cancel)
 
         layout.addLayout(layout2)
-        layout.addWidget(list_view)
+        layout.addWidget(self.list_view)
         layout.addLayout(layout3)
 
         self.setLayout(layout)
 
-        def current_item():
-            self.temp = list_view.currentItem()
-            self.item = self.temp.text()
-            temp = self.window.databases_names.pop(self.item)
-            self.window.databases_names[self.item] = temp
-            self.window.change_current_database(self.item)
+    def enter_connection(self):
+        if self.enter.isSignalConnected(get_signal(self.enter, "clicked")):
+            self.enter.disconnect()
+        self.enter.clicked.connect(self.current_item)
+        self.del_db_button.setEnabled(True)
+
+    def current_item(self):
+        if self.window.current_database is not None:
+            close = self.window.open_save_messagebox()
+            if not close:
+                self.setFocus()
+                return
+            self.window.read_settings()
+        temp = self.list_view.currentItem()
+        item = temp.text()
+        temp = self.window.databases_names.pop(item)
+        self.window.databases_names[item] = temp
+        self.window.change_current_database(item)
+        self.close()
+
+    def delete_database(self):
+        name = self.list_view.currentItem().text()
+        ret = QMessageBox.warning(self, "Delete", f"Are you sure you would like to delete "
+                                                  f"{name}? \n Deleting a Database is permanent",
+                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                  QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.No:
+            return
+        else:
+            pos = self.window.databases_names[name]
+            self.window.databases[pos].delete_database()
+            self.window.databases.pop(pos)
+            self.window.databases_names.pop(name)
+            if pos == self.window.current_database and len(self.window.databases) > 0:
+                self.list_view.takeItem(self.list_view.currentRow())
+                self.window.change_current_database(self.list_view.item(0).text())
+            else:
+                self.window.close_current_database()
+            self.window.save()
             self.close()
 
     def closeEvent(self, event) -> None:
@@ -240,7 +284,7 @@ class SearchWindow(QWidget):
         self.resize(700, 500)
         self.window.center_on_mainwindow(self)
         # setting up search bar and connection to search
-        self.search_bar = self.window.MySearchLineEdit(self)
+        self.search_bar = MySearchLineEdit(self)
         self.search_bar.setFixedSize(180, 25)
         self.search_bar.setPlaceholderText("Search")
         self.search_bar.textChanged.connect(self.search_database)
@@ -255,6 +299,7 @@ class SearchWindow(QWidget):
         self.search_table = QTableWidget()
         self.search_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.search_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.search_table.verticalHeader().setMinimumSectionSize(24)
         self.search_table.setSortingEnabled(True)
         self.search_table.cellChanged.connect(self.update_database)
         self.search_table.itemSelectionChanged.connect(self.change_selected)
@@ -364,7 +409,7 @@ class EditHotKeys(QWidget):
         self.hotKeyWindow.setColumnCount(2)
         self.hotKeyWindow.horizontalHeader().hide()
         self.hotKeyWindow.verticalHeader().hide()
-        self.hotKeyWindow.setStyleSheet("QTableWidget {gridline-color: transparent; color: black}")
+        self.hotKeyWindow.setStyleSheet("QTableWidget {gridline-color: transparent}")
         self.hotKeyWindow.setEditTriggers(QAbstractItemView.EditTrigger.AllEditTriggers)
 
         self.hotKeyWindow.setItemDelegate(self.Delegate(self.window))
@@ -502,7 +547,7 @@ class EditHotKeys(QWidget):
                     return int("".join(format(ord(i), 'b').zfill(8) for i in e))
 
             @staticmethod
-            def convert_sym(sym):
+            def convert_sym(sym):  # A manual key entry converter for the hotkey window
                 if sym == "!":
                     return "1"
                 elif sym == "~":
@@ -545,11 +590,3 @@ class EditHotKeys(QWidget):
                     return "."
                 elif sym == "?":
                     return "/"
-
-
-class EditThemes(QWidget):
-
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Themes")
-        
