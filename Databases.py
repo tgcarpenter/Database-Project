@@ -1,4 +1,6 @@
 import sqlite3 as sql
+import shutil as shu
+import os
 
 
 class Database:
@@ -10,6 +12,8 @@ class Database:
         self.class_count = 0  # defines position of created column classes in column_classes list  -- useless?
         # what if two columns are named the same thing? ugh!! <- fixed because I refer to them by position not name
         self.column_classes = []  # contains all the column class objects (in order of columns)
+        self.to_delete = []
+
         con = sql.connect(self.name)
         cur = con.cursor()
         try:
@@ -20,24 +24,22 @@ class Database:
         con.close()
 
     def delete_database(self):
-        con = sql.connect(self.name)
-        cur = con.cursor()
-        cur.execute(f'DROP DATABASE {self.name}')
-        con.commit()
-        con.close()
+        os.remove(self.name)
 
-    def change_db_name(self, newname):  # this doesn't work
-        self.name = newname
+    def copy_database(self):
+        shu.copy(self.name, "temp.db")
 
-    def change_column_name(self, c_id, newname):  # Rework Column names
-        con = sql.connect(self.name)
-        cur = con.cursor()
-        cur.execute('ALTER TABLE {table_name} RENAME COLUMN {column_name} TO {newname}'
-                    ''.format(table_name=self.column_classes[c_id].table_name,
-                              column_name=self.column_classes[c_id].column_name, newname="[_" + newname + "]"))
-        self.column_classes[c_id].column_name = "[_" + newname + "]"
-        con.commit()
-        con.close()
+    def not_saved(self):
+        shu.copy("temp.db", self.name)
+
+    def change_db_name(self, newname):
+        self.name = newname + ".db"
+        os.rename(self.name, newname + ".db")
+
+    def rename_columns(self):  # Rework Column names
+        for column in self.column_classes:
+            if column.temp_saved_newname is not None:
+                column.change_column_name(self.name, column.temp_saved_newname)
 
     def temp(self):
         for column in self.column_classes:
@@ -62,7 +64,7 @@ class Database:
         self.class_count += 1
         self.list_table_count += 1
 
-    def delete_column(self, c_id):  #
+    def delete_column(self, c_id):
         self.column_classes[c_id].delete_column(self.name)
         self.column_classes.remove(self.column_classes[c_id])
 
@@ -90,6 +92,22 @@ class Database:
         con.commit()
         con.close()
 
+    def clear_empty_rows(self):
+        return
+        where = ''
+        for column in self.column_classes:
+            if column.table_name == "Main":
+                where += f" {column.column_name} IS NULL AND"
+            elif column.table_name[1] == "T":
+                where += f" {column.table_name} = 1 AND"
+
+        con = sql.connect(self.name)
+        cur = con.cursor()
+        del_rows = cur.execute(f"SELECT _id FROM Main WHERE {where[:-4]}").fetchall()
+        for row in del_rows:
+            ret = cur.execute(f"SELECT ")
+            self.delete_row([None], row[0])
+
     def update_column(self, c_id, r_id, old_value, new_value):
         self.column_classes[c_id].update(self.name, old_value, new_value, r_id)
 
@@ -107,7 +125,7 @@ class Database:
     def get_column_headers(self) -> list:
         return ["id"] + [column.column_name[2:-1] for column in self.column_classes]
 
-    def autofill_query(self, search):
+    def autofill_query(self, search):  # used as general autofill in search lineedit
         autofill = []
         con = sql.connect(self.name)
         cur = con.cursor()
@@ -120,7 +138,7 @@ class Database:
         con.close()
         return autofill
 
-    def list_column_query(self, col):
+    def list_column_query(self, col):  # Used for autofill in list column lineedit
         table = [column.table_name for column in self.column_classes if column.column_name == col]
         con = sql.connect(self.name)
         cur = con.cursor()
@@ -132,25 +150,16 @@ class Database:
     def general_query(self, start=int, end=int, search=False):  # search holds the text to search for. start/end will
         select_table_columns = ''  # not be given if search is given
         joined_tables = ''
-        on_parameters = ''
+        on_parameters = 'ON '
         where = 'WHERE ('
-        count = 1
-        switch = True
         con = sql.connect(self.name)
         cur = con.cursor()
         for column in self.column_classes:
-            select_table_columns += column.table_name + '.' + column.column_name  # Generating Columns Select
-            if count == len(self.column_classes):
-                select_table_columns += ' '
-            else:
-                select_table_columns += ', '
+            select_table_columns += f"{column.table_name}.{column.column_name}, "  # Generating Columns Select
+
             if column.table_name[1] == 'T':  # Generating join tables and on parameters
                 joined_tables += 'JOIN ' + column.table_name + ' '
-                if switch:
-                    switch = False
-                    on_parameters += f'ON Main.{column.table_name.casefold()}_id = {column.table_name}._rowid_ '
-                else:
-                    on_parameters += f'AND Main.{column.table_name.casefold()}_id = {column.table_name}._rowid_ '
+                on_parameters += f'Main.{column.table_name.casefold()}_id = {column.table_name}._rowid_ AND '
             elif column.table_name[1] == 'L':
                 joined_tables += f'JOIN (SELECT DISTINCT {column.link_table_name}._main_id, ' \
                                  f'group_concat({column.table_name}.{column.column_name}, ", ") OVER (PARTITION BY ' \
@@ -159,27 +168,43 @@ class Database:
                                  f'{column.table_name}._rowid_ = ' \
                                  f'{column.link_table_name}.{column.table_name.casefold()}_id) AS {column.table_name}' \
                                  f' '
-                if switch:
-                    switch = False
-                    on_parameters += f'ON Main._id = {column.table_name}._main_id '
-                else:
-                    on_parameters += f'AND Main._id = {column.table_name}._main_id '
+                on_parameters += f'Main._id = {column.table_name}._main_id AND '
             if search:
                 where += fr'{column.column_name} LIKE "%{search}%" ESCAPE "\" OR '
-            count += 1
         if search:
             where = where[:-3] + ')'
         else:
             where = f'WHERE Main._id >= {start} AND Main._id <= {end}'
-        query = cur.execute(fr'SELECT Main._id, {select_table_columns} FROM Main {joined_tables} {on_parameters} '
+        query = cur.execute(fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
                             fr'{where}').fetchall()
         con.close()
         return query
 
 
-class ColumnInteger:
-    def __init__(self, name, db_name):  # Inserts column into main table One-to-one
+class Column:
+    def __init__(self, name):
         self.column_name = "[_" + name + "]"
+        self.temp_saved_newname = None
+        self.table_name = None
+
+    def set_temp_name(self, newname):  # this still functions, but I'm not sure its necessary
+        self.temp_saved_newname = newname
+
+    def change_column_name(self, db_name, newname):  # Rework Column names
+        con = sql.connect(db_name)
+        cur = con.cursor()
+        cur.execute('ALTER TABLE {table_name} RENAME COLUMN {column_name} TO {newname}'
+                    ''.format(table_name=self.table_name,
+                              column_name=self.column_name, newname="[_" + newname + "]"))
+        self.column_name = "[_" + newname + "]"
+        con.commit()
+        con.close()
+        self.temp_saved_newname = None
+
+
+class ColumnInteger(Column):
+    def __init__(self, name, db_name):  # Inserts column into main table One-to-one
+        super().__init__(name)
         self.table_name = "Main"  # this is interesting
         con = sql.connect(db_name)
         cur = con.cursor()
@@ -208,9 +233,9 @@ class ColumnInteger:
         con.close()
 
 
-class ColumnText:
+class ColumnText(Column):
     def __init__(self, name, db_name, table_count):  # Creates a one-to-many relation between main table and text table
-        self.column_name = "[_" + name + "]"
+        super().__init__(name)
         self.table_name = '_TextTable' + str(table_count)
         con = sql.connect(db_name)
         cur = con.cursor()
@@ -278,9 +303,9 @@ class ColumnText:
         con.close()
 
 
-class ColumnList:
+class ColumnList(Column):
     def __init__(self, name, db_name, table_count):  # Creates a many-to-many relation between main table and list table
-        self.column_name = "[_" + name + "]"
+        super().__init__(name)
         self.table_name = '_ListTable' + str(table_count)
         self.link_table_name = '_LinkTable' + str(table_count)
         con = sql.connect(db_name)

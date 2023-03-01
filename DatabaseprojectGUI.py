@@ -1,5 +1,4 @@
 import sys
-import copy
 
 from Databases import *
 
@@ -10,6 +9,8 @@ from PyQt6.QtMultimedia import *
 
 from PopupWindows import *
 from MenusandToolbars import *
+from MyWidgets import MyLineEdit, MyComboBox, MySpinBox, MyHHeaderView
+from UniversalFunctions import get_signal
 
 
 class MainWindow(QMainWindow):
@@ -17,6 +18,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         # other windows
+        self.window7 = None
         self.window6 = None
         self.window5 = None
         self.window4 = None
@@ -40,9 +42,10 @@ class MainWindow(QMainWindow):
         self.table_query_end = 1  # Position of end of General Query
         self.selected_item = str()  # holds old value of item before change
         self.query_switch = False  # helps process queries faster when alot are performed at once
-        self.header_sizes = {}
+        self.header_sizes = {}  # dictionary that holds a list of each databases header sizes as [db name]
         self.first_cell_size = 0
         self.backup_num = 0
+        self.rename_updates = []
 
         try:
             self.read_settings()
@@ -50,9 +53,9 @@ class MainWindow(QMainWindow):
         except:
             pass
 
-        # self.databases[self.current_database].row_count += 1
+        #self.databases[self.current_database].row_count += 4
+        # self.database_amount = 1
 
-        self.instantiate_sounds()
         self.signalMapper = QSignalMapper()
         self.signalMapper.mappedInt.connect(self.update_cell)
 
@@ -61,6 +64,8 @@ class MainWindow(QMainWindow):
         self.menuBar().addMenu(self.file_menu)
         self.edit_menu = EditMenu(self)
         self.menuBar().addMenu(self.edit_menu)
+        self.tool_menu = ToolMenu(self)
+        self.menuBar().addMenu(self.tool_menu)
 
         # making table
         self.table = QTableWidget()
@@ -69,13 +74,6 @@ class MainWindow(QMainWindow):
         # making toolbar
         self.option_bar = OptionBar(self)
         self.toolbar = ToolBar(self)
-
-        # connecting toolbar buttons (some anyway)
-        self.table.verticalHeader().sectionPressed.connect(self.activate_row_delete)
-        self.table.itemSelectionChanged.connect(self.deactivate_row_delete)
-
-        self.table.horizontalHeader().sectionPressed.connect(self.activate_column_delete)
-        self.table.itemSelectionChanged.connect(self.deactivate_column_delete)
 
         # updating the database when the value of a cell is changed
         self.table.cellChanged.connect(self.update_cell)
@@ -99,31 +97,45 @@ class MainWindow(QMainWindow):
         self.table.setMouseTracking(True)
 
         # horizontal Header
-        self.table.horizontalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.table.setHorizontalHeader(MyHHeaderView(self.table))
         self.table.horizontalHeader().customContextMenuRequested.connect(self.open_h_header_context)
 
         self.table_filter.selectColumn.connect(lambda: self.table.horizontalHeader().sectionPressed.
                                                emit(self.table.currentColumn()))
-        # updating column order when column moved
-        self.table.horizontalHeader().setSectionsMovable(True)
+        self.table.horizontalHeader().headerLabelChanged.connect(self.hold_column_name)
+
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
+            # Resizing the table based on text wrap
+        self.table.horizontalHeader().sectionResized.connect(self.resize_vertical)
+
+            # updating column order when column moved
         self.table.horizontalHeader().sectionMoved.connect(self.move_column)
 
+            # connecting toolbar buttons (some anyway)
+        self.table.horizontalHeader().sectionClicked.connect(self.activate_column_delete)
+        self.table.itemSelectionChanged.connect(self.deactivate_column_delete)
+
         # vertical Header
+        self.table.verticalHeader().setMinimumSectionSize(24)
         self.table.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.verticalHeader().customContextMenuRequested.connect(self.open_v_header_context)
 
         self.table_filter.selectRow.connect(lambda: self.table.verticalHeader().sectionPressed.
                                             emit(self.table.currentRow()))
 
-        # Resizing the table based on text wrap
+            # Resizing the table based on text wrap
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().sectionResized.connect(self.resize_vertical)
+
+            # connecting toolbar buttons (some anyway)
+        self.table.verticalHeader().sectionPressed.connect(self.activate_row_delete)
+        self.table.itemSelectionChanged.connect(self.deactivate_row_delete)
 
         # table
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.open_table_context)
 
-        # making and connecting vertical scroll bars
+            # making and connecting vertical scroll bars
         self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.verticalScrollBar().rangeChanged.connect(self.v_scrollbar_resize)
@@ -131,7 +143,6 @@ class MainWindow(QMainWindow):
 
         self.scrollbar = QScrollBar()
         self.scrollbar.setMinimum(1)
-        # self.scrollbar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.set_scrollbar_max()
         self.scrollbar.valueChanged.connect(self.connect_scroll_bars)
         self.scrollbar.valueChanged.connect(self.deselect_input_widgets)
@@ -140,8 +151,6 @@ class MainWindow(QMainWindow):
         if self.current_database is not None and len(self.databases[self.current_database].column_classes):
             self.table.setColumnCount(len(self.header_sizes[self.databases[self.current_database].name[:-3]]))
             self.resize_headers()
-
-        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
@@ -207,12 +216,14 @@ class MainWindow(QMainWindow):
         self.dynam_add_input_widgets()
         # connecting input widgets when vertical header is pressed
         self.table.verticalHeader().sectionPressed.connect(self.connect_selected_to_widgets)
-        self.table.itemSelectionChanged.connect(lambda: self.information_box.hide())
+        self.table.itemSelectionChanged.connect(self.information_box.hide)
+        self.scrollbar.valueChanged.connect(self.information_box.hide)
 
         widget = QWidget()
         widget.setLayout(layout)
 
         self.setCentralWidget(widget)
+        self.repaint()
 
         # Gui Widgets control
 
@@ -230,19 +241,20 @@ class MainWindow(QMainWindow):
         self.h_header_context_menu.popup(QCursor.pos())
         hIndex = self.table.horizontalHeader().logicalIndexAt(pos)
         if self.h_header_context_menu.sColumn_action. \
-                isSignalConnected(self.get_signal(self.h_header_context_menu.sColumn_action, "triggered")):
+                isSignalConnected(get_signal(self.h_header_context_menu.sColumn_action, "triggered")):
             self.h_header_context_menu.sColumn_action.triggered.disconnect()
         self.h_header_context_menu.sColumn_action.triggered. \
             connect(lambda: self.table.horizontalHeader().sectionPressed.emit(hIndex))
         self.h_header_context_menu.sColumn_action.triggered. \
             connect(self.h_header_context_menu.sColumn_action.triggered.disconnect)
         print("h header context created")
+        print(self.table.horizontalHeader().count())
 
     def open_v_header_context(self, pos):
         self.v_header_context_menu.popup(QCursor.pos())
         vIndex = self.table.verticalHeader().logicalIndexAt(pos)
         if self.v_header_context_menu.sRow_action. \
-                isSignalConnected(self.get_signal(self.v_header_context_menu.sRow_action, "triggered")):
+                isSignalConnected(get_signal(self.v_header_context_menu.sRow_action, "triggered")):
             self.v_header_context_menu.sRow_action.triggered.disconnect()
         self.v_header_context_menu.sRow_action.triggered. \
             connect(lambda: self.table.verticalHeader().sectionPressed.emit(vIndex))
@@ -254,14 +266,11 @@ class MainWindow(QMainWindow):
         self.table_context_menu.popup(QCursor.pos())
         print("table context emitted")
 
-    def open_scrollbar_context(self):
-        pass
-
-    def set_cell_status(self, row, column):
-        data = self.table.itemAt(self.table.viewport().mapFromGlobal(QCursor.pos())).text()
-        self.statusBar().setStyleSheet("color: black")
-        self.statusBar().showMessage(f"Row: {self.table_query_start + row}, Column: {column}, "
-                                     f"Entry: {data}")
+    def set_cell_status(self, row, column):  # used to find and display status bar info
+        if self.table.itemAt(self.table.viewport().mapFromGlobal(QCursor.pos())) is not None:
+            data = self.table.itemAt(self.table.viewport().mapFromGlobal(QCursor.pos())).text()
+            self.statusBar().showMessage(f"Row: {self.table_query_start + row}, Column: {column}, "
+                                         f"Entry: {data}")
 
     def activate_row_delete(self):
         self.toolbar.delete_cur_row.setEnabled(True)
@@ -285,29 +294,29 @@ class MainWindow(QMainWindow):
                 else:
                     self.add_integer_input_widget(col.column_name[2:-1])
 
-    def add_integer_input_widget(self, col_name):
-        int_input = self.MySpinBox()
+    def add_integer_input_widget(self, col_name: str):
+        int_input = MySpinBox(self)
         int_input.setRange(-9999, 9999)
         int_input.editingFinished.connect(self.signalMapper.map)
         header = QLabel(col_name + ":")
         self.information_box_header_layout.addWidget(header)
         self.information_box_widget_layout.addWidget(int_input)
 
-    def add_text_input_widget(self, col_name):
-        text_input = self.MyLineEdit(col_name)
+    def add_text_input_widget(self, col_name: str):
+        text_input = MyLineEdit(col_name, self)
         text_input.editingFinished.connect(self.signalMapper.map)
         header = QLabel(col_name + ":")
         self.information_box_header_layout.addWidget(header)
         self.information_box_widget_layout.addWidget(text_input)
 
-    def add_list_input_widget(self, col_name):  # - may do this later, have to figure out formatting
-        list_input = self.MyComboBox(col_name)
+    def add_list_input_widget(self, col_name: str):  # - may do this later, have to figure out formatting
+        list_input = MyComboBox(col_name, self)
         list_input.currentTextChanged.connect(self.signalMapper.map)
         header = QLabel(col_name + ":")
         self.information_box_header_layout.addWidget(header)
         self.information_box_widget_layout.addWidget(list_input)
 
-    def clearLayout(self, layout):
+    def clearLayout(self, layout: QLayout):
         if layout is not None:
             while layout.count():
                 child = layout.takeAt(0)
@@ -327,7 +336,7 @@ class MainWindow(QMainWindow):
                 continue  # implement some other features
 
             if col.table_name[1] == "T":  # handles text and list columns
-                if input_widget.isSignalConnected(self.get_signal(input_widget, "textChanged")):
+                if input_widget.isSignalConnected(get_signal(input_widget, "textChanged")):
                     input_widget.textChanged.disconnect()
                     print("textChanged disconnected")
                 if self.table.selectedItems()[i].text():
@@ -341,7 +350,7 @@ class MainWindow(QMainWindow):
                 input_widget.set_autofill()
 
             elif col.table_name[1] == "L":
-                if input_widget.lineEdit().isSignalConnected(self.get_signal(input_widget.lineEdit(), "textChanged")):
+                if input_widget.lineEdit().isSignalConnected(get_signal(input_widget.lineEdit(), "textChanged")):
                     input_widget.lineEdit().textChanged.disconnect()
                     print("textChanged disconnected")
                 input_widget.blockSignals(True)
@@ -357,7 +366,7 @@ class MainWindow(QMainWindow):
                 self.signalMapper.setMapping(input_widget, i)
 
             else:  # handles integer columns
-                if input_widget.isSignalConnected(self.get_signal(input_widget, "textChanged")):
+                if input_widget.isSignalConnected(get_signal(input_widget, "textChanged")):
                     input_widget.textChanged.disconnect()
                 if self.table.selectedItems()[i].text():
                     input_widget.setValue(int(self.table.selectedItems()[i].text()))
@@ -374,42 +383,40 @@ class MainWindow(QMainWindow):
             input_widget = self.information_box_widget_layout.itemAt(i).widget()
             if input_widget.hasFocus():
                 input_widget.clearFocus()
-                self.information_box.hide()
                 return
 
         # Gui media functions
 
-    def instantiate_sounds(self):  # unused
-        self.error_sound = QSoundEffect()
-        self.error_sound.setSource(QUrl.fromLocalFile("error-beep.WAV"))
-
-    def connect_scroll_bars(self, s_value):
+    def connect_scroll_bars(self, s_value: int):
         self.scrollbar.blockSignals(True)
-        print("row count", self.table.rowCount())
+        while s_value < self.scrollbar_total:  # scrolling up
+            self.table_query_start -= 1
+            if self.table_query_start < 1:  # failsafe, shouldn't be needed
+                self.table_query_start = 1
+            self.table_query_end -= 1
+            self.scroll_query(True)
+            self.scrollbar_total -= self.first_cell_size
+            if self.scrollbar.value() < 2:  # to catch instances where cell sizes are adjusted
+                self.scrollbar_total = 1
+                self.table_query_end = self.table_query_end - (self.table_query_start - 1)
+                self.table_query_start = 1
+                self.query_database()
+            self.table.verticalScrollBar().setValue(s_value - self.scrollbar_total - 1)
+            if self.first_cell_size > 24:
+                self.scrollbar.setMaximum(self.scrollbar.maximum() - (self.first_cell_size - 24))
         while s_value > self.scrollbar_total + self.first_cell_size:  # scrolling down
             self.scrollbar_total += self.first_cell_size
             self.table_query_start += 1
             self.table_query_end += 1
             if self.first_cell_size > 24:
                 self.scrollbar.setMaximum(self.scrollbar.maximum() + self.first_cell_size - 24)
-                print("maximum", self.scrollbar.maximum())
             self.scroll_query(False)
             self.table.verticalScrollBar().setValue(s_value - self.scrollbar_total - 1)
-        while s_value < self.scrollbar_total:  # scrolling up
-            self.table_query_start -= 1
-            self.table_query_end -= 1
-            self.scroll_query(True)
-            self.scrollbar_total -= self.first_cell_size
-            self.table.verticalScrollBar().setValue(s_value - self.scrollbar_total - 1)
-            if self.first_cell_size > 24:
-                self.scrollbar.setMaximum(self.scrollbar.maximum() - (self.first_cell_size - 24))
         self.table.verticalScrollBar().setValue(s_value - self.scrollbar_total)
+        self.update_v_headers()
         self.scrollbar.blockSignals(False)
-        # print(self.scrollbar.value(), s_value)
-        print("scrollbar total:", self.scrollbar_total, "table query start:", self.table_query_start,
-              "table query end:", self.table_query_end)
 
-    def scroll_to(self, row):
+    def scroll_to(self, row: int):
         if int(self.table.verticalHeaderItem(0).text()) == row:
             return
         elif int(self.table.verticalHeaderItem(0).text()) > row:
@@ -430,8 +437,8 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.first_cell_size = self.table.verticalHeader().sectionSize(0)
 
-    def v_scrollbar_resize(self, _, ma):
-        print(ma)
+    def v_scrollbar_resize(self, _, ma):  # used to resize scrollbar to always allow scrolling when when
+                                            # scrollbar wouldn't exist
         if ma < 25:
             self.table.verticalScrollBar().setMaximum(self.first_cell_size)
 
@@ -464,17 +471,14 @@ class MainWindow(QMainWindow):
                 count += 1
         self.table.blockSignals(False)
         self.first_cell_size = self.table.verticalHeader().sectionSize(0)
-        print("first cell size:", self.first_cell_size)
-        print(self.table.rowCount())
 
     def scroll_query(self, top=True):
         self.table.blockSignals(True)
         if top:  # scrolling up
             query = self.databases[self.current_database].general_query(self.table_query_start, self.table_query_start)
-            print("maximum", self.table.verticalScrollBar().maximum(), "first cell size", self.first_cell_size)
+            # print("maximum", self.table.verticalScrollBar().maximum(), "first cell size", self.first_cell_size)
             if self.table_query_start < \
-                    self.databases[self.current_database].row_count - (self.table_query_end - self.table_query_start) \
-                    and query:
+                    self.databases[self.current_database].row_count - (self.table_query_end - self.table_query_start):
                 self.table.removeRow(self.table.rowCount() - 1)
             self.table.insertRow(0)
             for count, cell in enumerate(query[0][1:]):  # assigning queried statement to cells
@@ -485,15 +489,14 @@ class MainWindow(QMainWindow):
         else:  # Scrolling down
             query = self.databases[self.current_database].general_query(self.table_query_end, self.table_query_end)
             self.table.removeRow(0)
-            print("maximum", self.table.verticalScrollBar().maximum(), "first cell size", self.first_cell_size)
-            if self.table.verticalScrollBar().maximum() > self.first_cell_size and query:
+            # print("maximum", self.table.verticalScrollBar().maximum(), "first cell size", self.first_cell_size)
+            if query and self.table.verticalScrollBar().maximum() > self.first_cell_size:
                 self.table.insertRow(self.table.rowCount())
                 for count, cell in enumerate(query[0][1:]):  # assigning queried statement to cells
                     if cell is None:
                         cell = ''
                     item = QTableWidgetItem(str(cell))
                     self.table.setItem(self.table.rowCount() - 1, count, item)
-        self.update_v_headers()
         self.table.blockSignals(False)
         self.first_cell_size = self.table.verticalHeader().sectionSize(0)
 
@@ -523,8 +526,13 @@ class MainWindow(QMainWindow):
                                   - self.table.verticalHeader().sectionSize(self.table.currentRow()))
         self.databases[self.current_database].delete_row([obj.text() for obj in self.table.selectedItems()],
                                                          self.table_query_start + self.table.currentRow())
-        self.resizeEvent(self.geometry())
+        self.query_database()
         self.table.verticalHeader().sectionPressed.emit(self.table.currentRow())
+
+    def delete_empty_rows(self):
+        if self.current_database is not None:
+            self.databases[self.current_database].clear_empty_rows()
+            self.query_database()
 
     def add_new_column(self, column: int, name: str):
         if column == 0:
@@ -540,7 +548,8 @@ class MainWindow(QMainWindow):
             if self.databases[self.current_database].row_count > 0:
                 self.add_list_input_widget(name)
         self.update_column_count()  # does this need to be here?
-        self.update_headers()
+        new_header_label = QTableWidgetItem(name)
+        self.table.setHorizontalHeaderItem(self.table.horizontalHeader().count() - 1, new_header_label)
         self.window4.enter.disconnect()
         self.window4.close()
         self.query_database()  # this is used to put blank objects in newly generated cells so input widgets connect
@@ -558,22 +567,40 @@ class MainWindow(QMainWindow):
             self.toolbar.insert_row_action.setDisabled(True)
             self.clearLayout(self.information_box_widget_layout)
             self.clearLayout(self.information_box_header_layout)
-        self.resizeEvent(self.geometry())
+        self.update_headers()
+        self.query_database()
 
     def move_column(self, lIndex, oIndex, nIndex):
-        self.table.horizontalHeader().blockSignals(True)
+        header = self.table.horizontalHeader()
+        header.blockSignals(True)
         print(lIndex, oIndex, nIndex)
         self.databases[self.current_database].move_column(oIndex, nIndex)
-        self.table.horizontalHeader().moveSection(nIndex, oIndex)
+        header.moveSection(nIndex, oIndex)
         self.query_database()
-        self.update_headers()
-        self.table.horizontalHeader().blockSignals(False)
-        self.table.horizontalHeader().sectionPressed.emit(nIndex)
+        moved_header = QTableWidgetItem(header.model().headerData(oIndex, Qt.Orientation.Horizontal))
+        moved_size = header.sectionSize(oIndex)
+        # resizing and moving headers appropriately
+        index_modifier = 1 if nIndex > oIndex else -1
+
+        for index in range(oIndex, nIndex, index_modifier):
+            item = QTableWidgetItem(header.model().headerData(index + index_modifier, Qt.Orientation.Horizontal))
+            self.table.setHorizontalHeaderItem(index, item)
+            size = header.sectionSize(index + index_modifier)
+            header.resizeSection(index, size)
+
+        self.table.setHorizontalHeaderItem(nIndex, moved_header)
+        header.resizeSection(nIndex, moved_size)
+
+        header.blockSignals(False)
+        header.sectionPressed.emit(nIndex)
+
+    def hold_column_name(self, column_index, name):
+        self.databases[self.current_database].column_classes[column_index].set_temp_name(name)
 
     def update_column_count(self):  # why do I do this instead of just updating to the length of the query?
         self.table.setColumnCount(len(self.databases[self.current_database].column_classes))
 
-    def update_row_count(self, count):
+    def update_row_count(self, count: int):
         self.table.setRowCount(count)
 
     def set_scrollbar_max(self):
@@ -582,10 +609,12 @@ class MainWindow(QMainWindow):
         else:
             self.scrollbar.setMaximum(1)
 
-    def change_current_database(self, db_name: str):
+    def change_current_database(self, db_name: str):  # Why doesn't this get called upon first loading?
         self.current_database = self.databases_names[db_name]
-        self.table_query_start = 1  # if self.databases[self.current_database].row_count > 0 else 0
+        self.databases[self.current_database].copy_database()
+        self.table_query_start = 1
         self.resizeEvent(self.geometry())
+        self.query_database()
         if db_name in self.header_sizes:
             self.resize_headers()
         self.clearLayout(self.information_box_widget_layout)
@@ -601,7 +630,6 @@ class MainWindow(QMainWindow):
             self.toolbar.insert_row_action.setDisabled(True)
         else:
             self.toolbar.insert_row_action.setEnabled(True)
-        print(self.databases[self.current_database].row_count)
         self.toolbar.insert_new_column.setEnabled(True)
 
     def close_current_database(self):
@@ -614,7 +642,8 @@ class MainWindow(QMainWindow):
     def update_headers(self):
         if self.current_database is not None:
             headers = self.databases[self.current_database].get_column_headers()[1:]
-            self.table.setHorizontalHeaderLabels(headers)
+            if headers is not None:
+                self.table.setHorizontalHeaderLabels(headers)
 
     def resize_headers(self):
         for i, size in enumerate(self.header_sizes[self.databases[self.current_database].name[:-3]]):
@@ -636,7 +665,8 @@ class MainWindow(QMainWindow):
                     new_value = self.table.item(row, column).text()
                 else:
                     new_value = None
-            if self.databases[self.current_database].column_classes[column].table_name == "Main":
+            if self.databases[self.current_database].column_classes[column].\
+                    table_name == "Main" and new_value is not None:
                 try:
                     int(new_value)
                 except ValueError:
@@ -647,6 +677,7 @@ class MainWindow(QMainWindow):
             if new_value is not None:
                 new_value = new_value.strip()
                 new_value = new_value.strip(",")
+                new_value = new_value.replace('"', "'" + "'")
             self.databases[self.current_database].update_column(column, self.table_query_start + row,
                                                                 self.selected_item, new_value)
 
@@ -659,7 +690,6 @@ class MainWindow(QMainWindow):
         else:
             self.selected_item = ''
         self.blockSignals(False)
-        # print(self.selected_item, text)
 
         # window controls
 
@@ -680,6 +710,12 @@ class MainWindow(QMainWindow):
         settings.beginGroup('tableconfig')
         settings.setValue('columnconfig', self.table.horizontalHeader().saveState())
         settings.setValue('headersizes', self.header_sizes)
+        settings.endGroup()
+
+    def save_rowcount(self):  # this breaks with the new save system
+        settings = QSettings(r'settings.ini', QSettings.Format.IniFormat)
+        settings.beginGroup('windowconfig')
+        settings.setValue('databases', self.databases)
         settings.endGroup()
 
     def write_backup(self):
@@ -736,33 +772,32 @@ class MainWindow(QMainWindow):
         a.moveCenter(self.frameGeometry().center())
         win.move(a.topLeft())
 
-    @staticmethod
-    def get_signal(oObject: QObject, strSignalName: str):
-        oMetaObj = oObject.metaObject()
-        for i in range(oMetaObj.methodCount()):
-            oMetaMethod = oMetaObj.method(i)
-            if not oMetaMethod.isValid():
-                continue
-            if oMetaMethod.methodType() == QMetaMethod.MethodType.Signal and \
-                    oMetaMethod.name() == strSignalName:
-                return oMetaMethod
-
-        return None
-
-    def closeEvent(self, event):
-        print(self.databases_names, self.databases, self.current_database)
+    def open_save_messagebox(self):  # returns true if the database is to be closed, else returns false
         ret = QMessageBox.question(self, "Save",
                                    f"Would you like to save {self.databases[self.current_database].name[:-3]} "
                                    f"before closing?",
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No |
                                    QMessageBox.StandardButton.Cancel)
         if ret == QMessageBox.StandardButton.Cancel:
+            return False
+        self.write_backup()
+        if ret == QMessageBox.StandardButton.Yes:
+            self.save()
+        else:
+            self.databases[self.current_database].not_saved()
+        return True
+
+    def save(self):
+        self.databases[self.current_database].rename_columns()
+        self.write_settings()
+        self.databases[self.current_database].copy_database()
+
+    def closeEvent(self, event):
+        print(self.databases_names, self.databases, self.current_database)
+        close = self.open_save_messagebox()
+        if not close:
             event.ignore()
             return
-        else:
-            self.write_backup()
-            if ret == QMessageBox.StandardButton.Yes:
-                self.write_settings()
         for win in [self.window2, self.window3, self.window4, self.window5, self.window6]:
             if win:
                 win.close()
@@ -772,22 +807,21 @@ class MainWindow(QMainWindow):
         if not self.information_box.isHidden():  # hiding information box when window resized
             self.table.itemSelectionChanged.emit()
             self.table.clearSelection()
-        print("resizeEvent")
-        app.processEvents()  # updates geometry by forcing the process of events before grabbing geometry
+        QApplication.processEvents()  # updates geometry by forcing the process of events before grabbing geometry
         count = self.table.geometry().getRect()
         if self.current_database is None:
-            self.query_database()
-        elif count[3] // 24 > self.databases[self.current_database].row_count:  # + self.table_query_start - 1
-            self.table_query_end = self.databases[self.current_database].row_count \
-                if self.databases[self.current_database].row_count > 0 else 0
-            self.query_database()
-            self.v_scrollbar_resize(None, self.table.verticalScrollBar().maximum())
+            self.query_database()  # sets initial state of scrollbar
         else:
-            self.table_query_end = self.table_query_start + (count[3] // 24 - 1)
-            self.query_database()
-        if self.table.horizontalHeaderItem(0) is None:  # I don't remember what this is for
+            self.table_query_end = self.table_query_start + (count[3] // 24) + 10
+            self.update_v_headers()
+            if self.table.rowCount() < count[3] // 24:
+                self.query_database()
+        self.v_scrollbar_resize(None, self.table.verticalScrollBar().maximum())
+        if self.table.horizontalHeaderItem(0) is None:
             self.update_headers()
+            self.databases[self.current_database].copy_database()
 
+    # These windows probably have a better place else wear
     def make_add_database_window(self):
         self.setDisabled(True)
         self.window2 = DbNameInputWindow(self)
@@ -806,8 +840,6 @@ class MainWindow(QMainWindow):
             self.setDisabled(True)
             self.window4 = AddNewColumn(self)
             self.window4.show()
-        else:  # shouldn't trigger anymore
-            self.error_sound.play()
 
     def open_search_window(self):
         if self.current_database is not None:
@@ -820,6 +852,12 @@ class MainWindow(QMainWindow):
         self.window6 = EditHotKeys(self, self.hotkeys)
         self.window6.show()
 
+    def open_themes_window(self):
+        from ThemesWidgets import EditThemes
+        self.setDisabled(True)
+        self.window7 = EditThemes(self)
+        self.window7.show()
+
     def eventFilter(self, a0: 'QObject', a1: 'QWheelEvent') -> bool:
         if a1.type() == QEvent.Type.Wheel:
             y = a1.angleDelta().y()
@@ -830,141 +868,6 @@ class MainWindow(QMainWindow):
             self.table.clearSelection()
             return True
         return super(MainWindow, self).eventFilter(a0, a1)
-
-    class MyComboBox(QComboBox):
-        firstClicked = pyqtSignal(str, name="firstClicked")
-
-        def __init__(self, name):
-            super().__init__()
-            self.name = f"[_{name}]"
-            self.item = ''
-            self.setEditable(True)
-            self.activated.connect(self.insert_completion)
-            self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-            self.setLineEdit(self.InComboEdit(self))
-
-        def set_autofill(self):
-            self.clear()
-            autofill = window.databases[window.current_database].list_column_query(self.name)
-            self.addItems([str(a[0]) for a in autofill])
-
-        def insert_completion(self, completion):
-            self.lineEdit().blockSignals(True)
-            self.lineEdit().setText(self.item)
-            self.lineEdit().blockSignals(False)
-            completion = self.itemText(completion)
-            self.lineEdit().end(False)
-            text = self.lineEdit().text()
-            if not text:
-                self.lineEdit().insert(completion)
-            elif completion == text:
-                return
-            else:
-                pre = ''
-                for char in text[::-1]:
-                    if char != ",":
-                        pre += char
-                    else:
-                        pre += ","
-                        break
-                pref = pre.strip().casefold()
-                com = ", " + completion
-                com = com[:len(pre)].casefold()
-                if pref[::-1] == com:
-                    self.lineEdit().setSelection(len(text), len(pre) * -1)
-                self.lineEdit().insert(", " + completion)
-            self.item = self.lineEdit().text()
-
-        def focusInEvent(self, *args, **kwargs):
-            window.table.blockSignals(True)
-            self.firstClicked.emit(self.lineEdit().text())
-            self.item = self.lineEdit().text()
-            print('first clicked')
-            super(window.MyComboBox, self).focusInEvent(*args)
-
-        def focusOutEvent(self, a0: QFocusEvent) -> None:
-            window.table.blockSignals(False)
-            print('Unfocused')
-            super(window.MyComboBox, self).focusOutEvent(a0)
-
-        class InComboEdit(QLineEdit):
-            def __init__(self, combo):
-                super().__init__()
-                self.combo = combo
-                self.editingFinished.connect(self.set_item)
-
-            def set_item(self):
-                self.combo.item = self.text()
-                self.combo.currentTextChanged.emit('')
-                window.change_selected(self.text())
-
-    class MySpinBox(QSpinBox):
-        firstClicked = pyqtSignal(str, name="firstClicked")
-
-        def __init__(self):
-            super().__init__()
-
-        def focusInEvent(self, *args, **kwargs):
-            window.table.blockSignals(True)
-            self.firstClicked.emit(self.cleanText())
-            print('first clicked')
-            super(window.MySpinBox, self).focusInEvent(*args)
-
-        def focusOutEvent(self, a0: QFocusEvent) -> None:
-            window.table.blockSignals(False)
-            print('Unfocused')
-            super(window.MySpinBox, self).focusOutEvent(a0)
-
-    class MyLineEdit(QLineEdit):
-        firstClicked = pyqtSignal(str, name="firstClicked")
-
-        def __init__(self, name):
-            super().__init__()
-            self.name = f"[_{name}]"
-            self.completer_modal = QStringListModel()
-            self.completer = QCompleter()
-            self.completer.setModel(self.completer_modal)
-            self.completer.setCompletionMode(QCompleter.CompletionMode.InlineCompletion)
-            self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-            self.setCompleter(self.completer)
-
-        def set_autofill(self):
-            autofill = window.databases[window.current_database].list_column_query(self.name)
-            self.completer_modal.setStringList([str(a[0]) for a in autofill])
-
-        def focusInEvent(self, a0: QFocusEvent) -> None:
-            window.table.blockSignals(True)
-            self.firstClicked.emit(self.text())
-            super(window.MyLineEdit, self).focusInEvent(a0)
-
-        def focusOutEvent(self, a0: QFocusEvent) -> None:
-            window.table.blockSignals(False)
-            print('Unfocused')
-            super(window.MyLineEdit, self).focusOutEvent(a0)
-
-    class MySearchLineEdit(QLineEdit):
-        focused = pyqtSignal(name="focused")
-
-        def __init__(self, w):
-            super().__init__()
-            self.win = w
-            self.switch = True
-
-        def focusInEvent(self, e: QFocusEvent) -> None:
-            if self.switch is False:
-                print("stacked focusInEvent")
-                return
-            self.focused.emit()
-            self.win.search_table.blockSignals(True)
-            print('Focused')
-            self.switch = False
-            super(window.MySearchLineEdit, self).focusInEvent(e)
-
-        def focusOutEvent(self, e: QFocusEvent) -> None:
-            self.win.search_table.blockSignals(False)
-            print("Unfocused")
-            self.switch = True
-            super(window.MySearchLineEdit, self).focusOutEvent(e)
 
     class EnterKeyFilter(QObject):
         enterKeyPressed = pyqtSignal(name="enterKeyPressed")
@@ -1017,11 +920,3 @@ class MainWindow(QMainWindow):
 
     class HighlightFilter(QObject):  # garbage?
         columnHighlighted = pyqtSignal(name="columnHighlighted")
-
-
-app = QApplication(sys.argv)
-
-window = MainWindow()
-window.show()
-
-app.exec()

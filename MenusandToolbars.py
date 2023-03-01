@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import QToolBar, QWidget, QSizePolicy, QMenu, QPushButton
 class OptionBar(QToolBar):
     def __init__(self, window):
         super().__init__()
-        self.setFixedHeight(50)
 
         self.open_database_action = QAction("Open Database")
         self.open_database_action.triggered.connect(window.open_database_window)
@@ -17,9 +16,6 @@ class OptionBar(QToolBar):
         self.addAction(self.new_database_action)
         self.addSeparator()
         self.addAction(self.open_database_action)
-
-        self.toolbar = QToolBar()
-        self.toolbar.setIconSize(QSize(40, 40))
 
         window.addToolBar(self)
 
@@ -123,7 +119,7 @@ class FileMenu(QMenu):
         self.open_db_action.triggered.connect(window.open_database_window)
 
         self.save_action = QAction("&Save", self)
-        self.save_action.triggered.connect(window.write_settings)
+        self.save_action.triggered.connect(window.save)
 
         self.close_action = QAction("Close", self)
         self.close_action.triggered.connect(window.close_current_database)
@@ -142,9 +138,24 @@ class EditMenu(QMenu):
         self.setTitle("Edit")
 
         hot_keys = QAction("Hot Keys", self)
-        hot_keys.triggered.connect(window.open_hotkeys_window)
+        hot_keys.triggered.connect(window.open_hotkeys_window)  # should these functions be in here?
+
+        themes = QAction("Themes", self)
+        themes.triggered.connect(window.open_themes_window)
 
         self.addAction(hot_keys)
+        self.addAction(themes)
+
+
+class ToolMenu(QMenu):
+    def __init__(self, window):
+        super().__init__()
+        self.setTitle("Tools")
+
+        empty_rows = QAction("Clear Empty Rows", self)
+        empty_rows.triggered.connect(window.delete_empty_rows)
+
+        self.addAction(empty_rows)
 
 
 class HideButton(QPushButton):
