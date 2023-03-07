@@ -819,7 +819,7 @@ class MainWindow(QMainWindow):
         self.v_scrollbar_resize(None, self.table.verticalScrollBar().maximum())
         if self.table.horizontalHeaderItem(0) is None:
             self.update_headers()
-            if self.databases[self.current_database] is not None:
+            if self.current_database is not None:
                 self.databases[self.current_database].copy_database()
 
     # These windows probably have a better place else wear
