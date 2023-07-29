@@ -1,10 +1,28 @@
 import sqlite3 as sql
 import shutil as shu
 import os
+from PyQt6.QtCore import QObject, pyqtSignal, QThread
+
+
+class Querier(QObject):
+    finished = pyqtSignal(list)
+
+    def __init__(self, common_query, name):
+        super().__init__()
+        self.common_query = common_query
+        self.name = name
+
+    def run(self):
+        con = sql.connect(self.name)
+        cur = con.cursor()
+        query = cur.execute(self.common_query).fetchall()
+        con.close()
+        self.finished.emit(query)
 
 
 class Database:
     def __init__(self, name):  # Main table is made with creation of class instance
+        super().__init__()
         self.name = name + '.db'
         self.text_table_count = 1  # defines current name for text tables in column creation
         self.list_table_count = 1  # defines current name for list tables in column creation
@@ -13,6 +31,9 @@ class Database:
         # what if two columns are named the same thing? ugh!! <- fixed because I refer to them by position not name
         self.column_classes = []  # contains all the column class objects (in order of columns)
         self.to_delete = []
+        self.common_query = "SELECT Main._id"
+        self.thread = None
+        self.temp = None
 
         con = sql.connect(self.name)
         cur = con.cursor()
@@ -40,15 +61,6 @@ class Database:
         for column in self.column_classes:
             if column.temp_saved_newname is not None:
                 column.change_column_name(self.name, column.temp_saved_newname)
-
-    def temp(self):
-        for column in self.column_classes:
-            if column.table_name[1] == 'T':
-                con = sql.connect(self.name)
-                cur = con.cursor()
-                cur.execute(f'CREATE INDEX {column.table_name}index ON {column.table_name} ({column.column_name})')
-                con.commit()
-                con.close()
 
     def add_column_integer(self, name):  # Adds Integer column to main table: ONE to ONE
         self.column_classes.append(ColumnInteger(name, self.name))
@@ -78,7 +90,7 @@ class Database:
             if column.table_name[1] == "T":
                 column.delete_row(self.name, old_val)
             elif column.table_name[1] == "L":
-                column.delete_row(self.name, old_val, None, r_id)
+                column.delete_row(self.name, old_val.split(", "), old_val.split(", "), r_id)
                 con = sql.connect(self.name)
                 cur = con.cursor()
                 cur.execute(f'UPDATE {column.link_table_name} SET _main_id = _main_id - 1 WHERE _main_id > {r_id}')
@@ -91,25 +103,35 @@ class Database:
         cur.execute(f'DELETE FROM "sqlite_sequence" WHERE "name" = "Main"')
         con.commit()
         con.close()
+        self.temp.pop(r_id - 1)
+        self.background_query()
 
     def clear_empty_rows(self):
-        return
-        where = ''
-        for column in self.column_classes:
-            if column.table_name == "Main":
-                where += f" {column.column_name} IS NULL AND"
-            elif column.table_name[1] == "T":
-                where += f" {column.table_name} = 1 AND"
 
+        del_rows = []
+
+        for row in range(len(self.temp) - 1, -1, -1):
+            if all([x is None for x in self.temp[row][1:]]):
+                del_rows.append(row + 1)
+
+        for row in del_rows:
+            self.delete_row([None for i in range(len(self.column_classes))], row)
+
+    def get_rowcount(self):
         con = sql.connect(self.name)
         cur = con.cursor()
-        del_rows = cur.execute(f"SELECT _id FROM Main WHERE {where[:-4]}").fetchall()
-        for row in del_rows:
-            ret = cur.execute(f"SELECT ")
-            self.delete_row([None], row[0])
+        x = cur.execute("SELECT MAX(_id) FROM Main").fetchone()
+        self.row_count = x[0] if x[0] is not None else 0
+        con.commit()
+        con.close()
 
     def update_column(self, c_id, r_id, old_value, new_value):
         self.column_classes[c_id].update(self.name, old_value, new_value, r_id)
+        if self.temp is not None and self.temp[r_id - 1] is not None:  # safeguards
+            self.temp[r_id - 1] = [i if num != c_id + 1 else new_value for num, i in enumerate(self.temp[r_id - 1])]
+        else:
+            pass
+            # print(self.temp)
 
     def add_defaults(self):
         self.row_count += 1
@@ -121,6 +143,9 @@ class Database:
                 cur.execute(f'INSERT INTO {column.link_table_name} (_main_id) VALUES ((SELECT MAX(_id) FROM Main))')
         con.commit()
         con.close()
+        if self.temp is not None:
+            self.temp.append([None if i != 0 else len(self.temp) + 1 for i in range(len(self.column_classes) + 1)])
+            # print(self.temp)
 
     def get_column_headers(self) -> list:
         return ["id"] + [column.column_name[2:-1] for column in self.column_classes]
@@ -134,7 +159,7 @@ class Database:
                                   f'WHERE {column.column_name} LIKE "{search}%" '
                                   f'AND {column.column_name} NOT LIKE "{search}"').fetchall()
             autofill += col_fil
-        print("auto", autofill)
+        # print("auto", autofill)
         con.close()
         return autofill
 
@@ -147,13 +172,10 @@ class Database:
         con.close()
         return autofill
 
-    def general_query(self, start=int, end=int, search=False):  # search holds the text to search for. start/end will
+    def generate_common_query(self):  # generates a common query to be used for querying (only used for scroll query)
         select_table_columns = ''  # not be given if search is given
         joined_tables = ''
         on_parameters = 'ON '
-        where = 'WHERE ('
-        con = sql.connect(self.name)
-        cur = con.cursor()
         for column in self.column_classes:
             select_table_columns += f"{column.table_name}.{column.column_name}, "  # Generating Columns Select
 
@@ -169,15 +191,69 @@ class Database:
                                  f'{column.link_table_name}.{column.table_name.casefold()}_id) AS {column.table_name}' \
                                  f' '
                 on_parameters += f'Main._id = {column.table_name}._main_id AND '
-            if search:
-                where += fr'{column.column_name} LIKE "%{search}%" ESCAPE "\" OR '
-        if search:
-            where = where[:-3] + ')'
+        self.common_query = fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
+        if self.thread is None or (self.temp is None and not self.thread.isRunning()):
+            self.background_query()
+        print("common query generated")
+
+    def background_query(self):  # runs background query to retrieve whole database
+        if self.common_query:
+            self.thread = QThread()
+            self.worker = Querier(self.common_query, self.name)
+            self.worker.moveToThread(self.thread)
+
+            self.thread.started.connect(self.worker.run)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.worker.finished.connect(self.set_temp)
+
+            self.thread.start()
+
+    def set_temp(self, temp):
+        self.temp = temp
+        # print(temp)
+
+    def general_query(self, start: int, end: int, search=False, q=False):  # search holds the text to search for. start/end will
+        if self.temp is not None and not search and not q:  # new list column doesn't return main.id until restart?
+            return self.temp[start - 1:(end if end < self.row_count else self.row_count)]
+            # return [self.temp[a - 1] for a in range(start, (end + 1) if end < self.row_count else self.row_count + 1)]
+        con = sql.connect(self.name)
+        cur = con.cursor()
+        if not search:
+            query = cur.execute(
+                fr'{self.common_query} WHERE Main._id >= {start} AND Main._id <= {end}').fetchall()
         else:
-            where = f'WHERE Main._id >= {start} AND Main._id <= {end}'
-        query = cur.execute(fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
-                            fr'{where}').fetchall()
+            select_table_columns = ''  # not be given if search is given
+            joined_tables = ''
+            on_parameters = 'ON '
+            where = 'WHERE ('
+            for column in self.column_classes:
+                select_table_columns += f"{column.table_name}.{column.column_name}, "  # Generating Columns Select
+
+                if column.table_name[1] == 'T':  # Generating join tables and on parameters
+                    joined_tables += 'JOIN ' + column.table_name + ' '
+                    on_parameters += f'Main.{column.table_name.casefold()}_id = {column.table_name}._rowid_ AND '
+                elif column.table_name[1] == 'L':
+                    joined_tables += f'JOIN (SELECT DISTINCT {column.link_table_name}._main_id, ' \
+                                     f'group_concat({column.table_name}.{column.column_name}, ", ") OVER (PARTITION BY ' \
+                                     f'Main._id) AS {column.column_name} FROM Main JOIN {column.table_name} JOIN ' \
+                                     f'{column.link_table_name} ON Main._id = {column.link_table_name}._main_id AND ' \
+                                     f'{column.table_name}._rowid_ = ' \
+                                     f'{column.link_table_name}.{column.table_name.casefold()}_id) AS {column.table_name}' \
+                                     f' '
+                    on_parameters += f'Main._id = {column.table_name}._main_id AND '
+                if search:
+                    where += fr'{column.column_name} LIKE "%{search}%" ESCAPE "\" OR '
+            if search:
+                where = where[:-3] + ')'
+            else:
+                where = f'WHERE Main._id >= {start} AND Main._id <= {end}'
+            query = cur.execute(fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
+                                fr'{where}').fetchall()
         con.close()
+        if self.thread is None or q or (self.temp is None and not self.thread.isRunning()):
+            self.background_query()  # there is still the possiblility q is set to true twice, but it hasn't happened yet
         return query
 
 
@@ -315,7 +391,7 @@ class ColumnList(Column):
         cur.execute(f'INSERT INTO {self.table_name} DEFAULT VALUES')
         cur.execute(
             f'CREATE TABLE {self.link_table_name} ({self.table_name.casefold() + "_id"} INTEGER NOT NULL '  # Create link table
-            f'DEFAULT 1, _main_id INTEGER NOT NULL, PRIMARY KEY ({self.table_name.casefold() + "_id"}, _main_id))')
+            f'DEFAULT 1, _main_id INTEGER NOT NULL)')
         cur.execute(f'INSERT INTO {self.link_table_name} (_main_id) SELECT Main._id FROM Main')
         con.commit()
         con.close()

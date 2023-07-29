@@ -1,11 +1,11 @@
-from PyQt6.QtCore import QStringListModel, Qt, QModelIndex
+from PyQt6.QtCore import QStringListModel, Qt, QModelIndex, QAbstractTableModel, QVariant
 from PyQt6.QtGui import QFont, QAction, QCursor, QKeySequence, QKeyEvent
 from PyQt6.QtWidgets import QLineEdit, QPushButton, QWidget, QLabel, QListWidget, QComboBox, QVBoxLayout, QHBoxLayout, \
     QFormLayout, QSizePolicy, QCompleter, QTableWidget, QHeaderView, QTableWidgetItem, QMenu, QGridLayout, \
-    QAbstractItemView, QStyledItemDelegate, QStyleOptionViewItem, QMessageBox
+    QAbstractItemView, QStyledItemDelegate, QStyleOptionViewItem, QMessageBox, QTableView
 
 from Databases import Database
-from MyWidgets import MySearchLineEdit
+from MyWidgets import MySearchLineEdit, MySearchTable
 from UniversalFunctions import get_signal
 
 
@@ -59,13 +59,13 @@ class DbNameInputWindow(QWidget):
 
     def create_database(self, name):  # this should probably be in mainwindow class
         if self.window.current_database is not None:
-            close = self.window.open_save_messagebox()
-            if not close:
+            cont = self.window.open_save_messagebox()  # returns false if action cancelled
+            if not cont:
                 return
-            self.window.read_settings()
+            self.window.read_settings()  # I don't understand what this is for
         self.window.databases.append(Database(name))
         self.window.databases_names[name] = self.window.database_amount
-        self.window.database_amount += 1
+        self.window.database_amount = len(self.window.databases)
         self.window.change_current_database(name)
         self.window.toolbar.insert_new_column.setEnabled(True)
         self.enter.disconnect()
@@ -148,13 +148,14 @@ class OpenDbWindow(QWidget):
         self.enter.clicked.connect(self.current_item)
         self.del_db_button.setEnabled(True)
 
-    def current_item(self):
+    def current_item(self):  # bad name
         if self.window.current_database is not None:
             close = self.window.open_save_messagebox()
             if not close:
                 self.setFocus()
                 return
-            self.window.read_settings()
+            self.window.read_settings()  # I'm confused about why this is necessary: saving writes all settings,
+                                            # so then why read them?
         temp = self.list_view.currentItem()
         item = temp.text()
         temp = self.window.databases_names.pop(item)
@@ -175,11 +176,24 @@ class OpenDbWindow(QWidget):
             self.window.databases[pos].delete_database()
             self.window.databases.pop(pos)
             self.window.databases_names.pop(name)
-            if pos == self.window.current_database and len(self.window.databases) > 0:
+            if name in self.window.header_sizes:
+                self.window.header_sizes.pop(name)
+            self.window.database_amount = len(self.window.databases)
+            if self.window.current_database != self.window.database_amount:  # changing position values for databases after deleted one
+                for key, val in self.window.databases_names.items():
+                    if val > pos:
+                        self.window.databases_names[key] -= 1
+                self.window.current_database -= 1 if self.window.current_database > 0 else 0
+                self.window.database_amount = len(self.window.databases)
+            if self.window.windowTitle() == name:  # if deleting current database, change database
                 self.list_view.takeItem(self.list_view.currentRow())
                 self.window.change_current_database(self.list_view.item(0).text())
-            else:
+            elif len(self.window.databases) > 0:  # if not current, but not last do nothing
+                pass
+            else:  # if last, close it
                 self.window.close_current_database()
+                self.window.current_database = None
+                self.winodw.database_amount = 0
             self.window.save()
             self.close()
 
@@ -197,11 +211,11 @@ class AddNewColumn(QWidget):
         self.setFixedSize(400, 115)
         self.window.center_on_mainwindow(self)
 
-        self.tips = ["Integer Columns contain numerical values i.e. 'counts', 'totals' or 'age'",
+        self.tips = ("Integer Columns contain numerical values i.e. 'counts', 'totals' or 'age'",
                      "Text Columns contain single input text items i.e. 'first name', 'notes', or 'dates'",
                      "List Columns contain a list of objects separated by ', ' between each entry i.e. "
-                     "'eggs, bread, bacon'"]
-        self.names = ["Integer Column", "Text Column", "List Column"]
+                     "'eggs, bread, bacon'")
+        self.names = ("Integer Column", "Text Column", "List Column")
 
         columns_list = QComboBox()
         columns_list.setPlaceholderText("Column Type...")
@@ -215,7 +229,7 @@ class AddNewColumn(QWidget):
         label2 = QLabel("Column Name:")
         self.description_label = QLabel()
         self.description_label.setWordWrap(True)
-        self.description_label.setStyleSheet("color: red")
+        self.description_label.setStyleSheet("color: orange")
         self.description_label.hide()
 
         input_box = QLineEdit()
@@ -224,11 +238,16 @@ class AddNewColumn(QWidget):
 
         self.enter = QPushButton("Enter", self)
         self.enter.setFixedWidth(100)
+        self.enter.setDisabled(True)
 
         columns_list.currentIndexChanged.connect(lambda: enter_connection())
         input_box.textChanged.connect(lambda: enter_connection())
 
         def enter_connection():
+            if input_box.text() != '':
+                self.enter.setEnabled(True)
+            else:
+                self.enter.setEnabled(False)
             if columns_list.currentIndex() != -1 and input_box.text() != '':
                 self.enter.clicked.connect(lambda: self.window.add_new_column(columns_list.currentIndex(),
                                                                               input_box.text().strip()))
@@ -283,26 +302,30 @@ class SearchWindow(QWidget):
         self.setWindowTitle("Database Search")
         self.resize(700, 500)
         self.window.center_on_mainwindow(self)
+
         # setting up search bar and connection to search
         self.search_bar = MySearchLineEdit(self)
         self.search_bar.setFixedSize(180, 25)
         self.search_bar.setPlaceholderText("Search")
         self.search_bar.textChanged.connect(self.search_database)
         self.search_bar.textChanged.connect(self.autofill)
+
         # setting up completer and completer model
         self.completer = QCompleter()
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.completer_model = QStringListModel()
         self.completer.setModel(self.completer_model)
         self.search_bar.setCompleter(self.completer)
+
         # setting up table to update database
-        self.search_table = QTableWidget()
-        self.search_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.search_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.search_table.verticalHeader().setMinimumSectionSize(24)
-        self.search_table.setSortingEnabled(True)
+        self.search_table = MySearchTable()
+        #self.search_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        #self.search_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        #self.search_table.verticalHeader().setMinimumSectionSize(24)
+        #self.search_table.setSortingEnabled(True)
         self.search_table.cellChanged.connect(self.update_database)
         self.search_table.itemSelectionChanged.connect(self.change_selected)
+
         # setting header context menu
         self.search_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.search_table.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -321,30 +344,32 @@ class SearchWindow(QWidget):
 
     def search_database(self, text):
         self.search_table.blockSignals(True)
-        if not text:  # If nothing is the search bar, passes search and restores default
-            self.search_table.setColumnCount(0)
-            self.search_table.setRowCount(0)
+        if len(text) < 2:  # If nothing is the search bar, passes search and restores default
+            self.search_table.clearData()
             return
-        search_query = self.window.databases[self.window.current_database].general_query(search=text)
+        search_query = self.window.databases[self.window.current_database].general_query(start=0, end=0, search=text)
         if not search_query:  # If nothing is returned, passes search and restores default
-            self.search_table.setColumnCount(0)
-            self.search_table.setRowCount(0)
+            self.search_table.clearData()
             return
-        print(search_query)
-        self.search_table.setColumnCount(len(search_query[0]))
-        self.search_table.setRowCount(len(search_query))
+        # print(search_query)
+        #self.search_table.setColumnCount(len(search_query[0]))
+        #self.search_table.setRowCount(len(search_query))
+        self.search_table.setAllData(search_query)  # in current model this has to go first
         self.search_table.setHorizontalHeaderLabels(
             self.window.databases[self.window.current_database].get_column_headers())
         self.search_table.setVerticalHeaderLabels([str(row[0]) for row in search_query])
         self.search_table.horizontalHeader().hideSection(0)
-        for row in range(len(search_query)):  # assigning queried statement to cells
-            count = 0
-            for cell in search_query[row]:
-                if cell is None:
-                    cell = ''
-                item = QTableWidgetItem(str(cell))
-                self.search_table.setItem(row, count, item)
-                count += 1
+        #self.search_table.model().setItemData()
+        #for row in range(len(search_query)):  # assigning queried statement to cells
+            #count = 0
+            #for cell in search_query[row]:
+                #if cell is None:
+                    #cell = ''
+                #item = QTableWidgetItem(str(cell))
+                #self.search_table.setItem(row, count, item)
+                #count += 1
+                #if count % 10 == 0:
+                    #self.repaint()
         for i, size in enumerate(
                 self.window.header_sizes[self.window.databases[self.window.current_database].name[:-3]]):
             self.search_table.horizontalHeader().resizeSection(i + 1, size)
@@ -356,16 +381,16 @@ class SearchWindow(QWidget):
         autofill = self.window.databases[self.window.current_database].autofill_query(search_text)
         self.completer_model.setStringList([str(a[0]) for a in autofill])
         self.completer.popup().resize(180, 24 * len(autofill))
-        print("completer", self.completer_model.stringList())
+        # print("completer", self.completer_model.stringList())
         self.search_bar.setFocus()
 
     def update_database(self, row, column):
-        self.window.update_cell(int(self.search_table.item(row, 0).text()) - self.window.table_query_start, column - 1,
-                                self.search_table.currentItem().text() if self.search_table.currentItem() else '')
+        self.window.update_cell(int(self.search_table.getData(row, 0)) - self.window.table_query_start, column - 1,
+                                self.search_table.currentItem() if self.search_table.currentItem() else '')
 
     def change_selected(self):
         self.blockSignals(True)
-        self.window.change_selected(self.search_table.currentItem().text() if self.search_table.currentItem() else None)
+        self.window.change_selected(self.search_table.currentItem() if self.search_table.currentItem() else None)
         self.blockSignals(False)
 
     def make_context_menus(self):
@@ -380,7 +405,7 @@ class SearchWindow(QWidget):
         self.context.popup(QCursor.pos())
         vIndex = self.search_table.verticalHeader().logicalIndexAt(pos)
         self.search_table.verticalHeader().sectionPressed.emit(vIndex)
-        row = int(self.search_table.verticalHeaderItem(vIndex).text())
+        row = int(self.search_table.verticalHeaderLabel(vIndex))
         self.go_to_action.triggered.disconnect()
         self.go_to_action.triggered.connect(lambda: self.go_to(row))
 
@@ -391,7 +416,7 @@ class SearchWindow(QWidget):
     def closeEvent(self, event) -> None:
         self.hide()
         self.window.setEnabled(True)
-        self.window.query_database()
+        self.window.query_database(query=True)
         event.accept()
 
 
@@ -536,7 +561,7 @@ class EditHotKeys(QWidget):
                 return
 
             @staticmethod
-            def sort_function(e: str):
+            def sort_function(e: str) -> int:
                 if e == "Ctrl":
                     return 1
                 if e == "Alt":
@@ -547,7 +572,7 @@ class EditHotKeys(QWidget):
                     return int("".join(format(ord(i), 'b').zfill(8) for i in e))
 
             @staticmethod
-            def convert_sym(sym):  # A manual key entry converter for the hotkey window
+            def convert_sym(sym) -> str:  # A manual key entry converter for the hotkey window
                 if sym == "!":
                     return "1"
                 elif sym == "~":

@@ -1,5 +1,9 @@
 from PyQt6.QtCore import QObject, QMetaMethod
 
+import timeit
+
+count = 0
+
 
 def get_signal(oObject: QObject, strSignalName: str):
     oMetaObj = oObject.metaObject()
@@ -12,3 +16,7 @@ def get_signal(oObject: QObject, strSignalName: str):
             return oMetaMethod
 
     return None
+
+
+def get_time(function):
+    print(timeit.timeit('function()', number=1, globals=locals()))
