@@ -1,8 +1,22 @@
 from PyQt6.QtWidgets import QComboBox, QLineEdit, QSpinBox, QCompleter, QColorDialog, QWidget, QHeaderView, \
     QStyleOptionFrame, QStyle, QTableView, QAbstractItemView
 from PyQt6.QtCore import Qt, QStringListModel, pyqtSignal, QPoint, QEvent, QObject, QModelIndex, QAbstractItemModel, \
-    QAbstractTableModel, QVariant, QSortFilterProxyModel
-from PyQt6.QtGui import QFocusEvent, QPainter, QPaintEvent, QCursor, QWheelEvent
+    QAbstractTableModel, QVariant, QSortFilterProxyModel, QTimer
+from PyQt6.QtGui import QFocusEvent, QPainter, QPaintEvent, QCursor, QWheelEvent, QResizeEvent
+
+
+class MyTableItem:
+    def __init__(self, table):
+        self.table = table
+        self.row = None
+        self.column = None
+
+    def setValues(self, row, column):
+        self.row = row
+        self.column = column
+
+    def setText(self, text):
+        self.table.setData(self.row, self.column, text)
 
 
 class MyComboBox(QComboBox):
@@ -17,6 +31,7 @@ class MyComboBox(QComboBox):
         self.activated.connect(self.insert_completion)
         self.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.setLineEdit(self.InComboEdit(self))
+        self.tableUpdater = MyTableItem(window.table)
 
     def set_autofill(self):
         self.clear()
@@ -86,6 +101,7 @@ class MySpinBox(QSpinBox):
     def __init__(self, window):
         super().__init__()
         self.window = window
+        self.tableUpdater = MyTableItem(window.table)
 
     def focusInEvent(self, *args, **kwargs):
         self.window.table.blockSignals(True)
@@ -112,6 +128,7 @@ class MyLineEdit(QLineEdit):
         self.completer.setCompletionMode(QCompleter.CompletionMode.InlineCompletion)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self.setCompleter(self.completer)
+        self.tableUpdater = MyTableItem(window.table)
 
     def set_autofill(self):
         autofill = self.window.databases[self.window.current_database].list_column_query(self.name)
@@ -170,6 +187,8 @@ class MySearchTable(QTableView):
 
     def setAllData(self, data: list):
         self.model().setAllData(data)
+        for i in range(50 if 50 > self.model().rowCount() else self.model().rowCount()):
+            self.resizeRowToContents(i)
 
     def setData(self, row, column, value):
         self.model().setData(self.model().index(row, column), value, Qt.ItemDataRole.EditRole)
@@ -182,6 +201,8 @@ class MySearchTable(QTableView):
 
 
 class MySearchTableModel(QAbstractTableModel):
+    allDataLoaded = pyqtSignal(name="allDataLoaded")
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.tableData = []
@@ -189,6 +210,7 @@ class MySearchTableModel(QAbstractTableModel):
         self.vHeaderData = []
         self.rowAmount = 0
         self.columnAmount = 0
+        self.loaded = False
 
     def rowCount(self, parent: QModelIndex = ...) -> int:
         return self.rowAmount
@@ -198,11 +220,13 @@ class MySearchTableModel(QAbstractTableModel):
 
     def data(self, index: QModelIndex, role: int = ...):
         if not index.isValid():
+            print(index.row(), index.column())
             return QVariant()
         if index.row() >= self.rowAmount or index.row() < 0:
             return QVariant()
         match role:
             case Qt.ItemDataRole.DisplayRole:
+                #print(index.row(), index.column())
                 return self.tableData[index.row()][index.column()]
             case Qt.ItemDataRole.EditRole:
                 return self.tableData[index.row()][index.column()]
@@ -224,7 +248,7 @@ class MySearchTableModel(QAbstractTableModel):
         self.tableData.sort(reverse=order.value, key=lambda x: x[column] if x[column] else str())
         self.setHeaderData(0, Qt.Orientation.Vertical, [r[0] for r in self.tableData])
         self.parent().blockSignals(True)
-        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.columnAmount - 1, self.rowAmount - 1),
+        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.rowAmount - 1, self.columnAmount - 1),
                               [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
         self.parent().blockSignals(False)
 
@@ -248,8 +272,10 @@ class MySearchTableModel(QAbstractTableModel):
         else:
             while len(self.vHeaderData) != self.rowAmount:
                 self.vHeaderData.append('')
-        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.columnAmount - 1, self.rowAmount - 1),
+        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.rowAmount - 1, self.columnAmount - 1),
                               [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        self.loadedRows = 50 if 50 > self.rowAmount else self.rowAmount
+        self.startBackgroundTimer()
         return True
 
     def setHeaderData(self, section: int, orientation: Qt.Orientation, value, role: int = ...) -> bool:
@@ -296,6 +322,26 @@ class MySearchTableModel(QAbstractTableModel):
 
         return QVariant()
 
+    def backgroundLoadRow(self):
+        if not self.loaded:
+            self.resizeRow()
+
+    def startBackgroundTimer(self):
+        timer = QTimer(self)
+        timer.timeout.connect(self.backgroundLoadRow)
+        self.allDataLoaded.connect(timer.stop)
+        timer.start(0)
+
+    def resizeRow(self):
+        if self.rowAmount > self.loadedRows:
+            self.parent().blockSignals(True)
+            self.parent().resizeRowToContents(self.loadedRows)
+            self.parent().blockSignals(False)
+            self.loadedRows += 1
+        else:
+            self.loaded = True
+            self.allDataLoaded.emit()
+
     def insertRow(self, row: int, parent: QModelIndex = ...) -> bool:
         self.beginInsertRows(QModelIndex(), row, row)
         self.tableData.insert(row, [str() for i in range(self.columnAmount)])
@@ -323,7 +369,7 @@ class MySearchTableModel(QAbstractTableModel):
 
     def removeColumn(self, column: int, parent: QModelIndex = ...) -> bool:
         self.beginRemoveColumns(QModelIndex(), column, column)
-        for row in self.tableData:
+        for row in self.tableData:  # this is expensive
             row.pop(column)
         self.hHeaderData.pop(column)
         self.endRemoveColumns()
@@ -364,25 +410,33 @@ class MySearchLineEdit(QLineEdit):
 class MyTable(QTableView):
     cellChanged = pyqtSignal(int, int, name="cellChanged")
     itemSelectionChanged = pyqtSignal(name="itemSelectionChanged")
+    cellEntered = pyqtSignal(int, int, name="cellEntered")
 
-    def __init__(self, parent):
+    def __init__(self, parent=None):
         super(MyTable, self).__init__(parent)
         self.setWordWrap(True)
         self.setMouseTracking(True)
 
+        self.setModel(MyTableModel(self))
+
         self.setHorizontalHeader(MyHHeaderView(self))
         self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
 
-        self.verticalHeader().verticalHeader().setMinimumSectionSize(24)
+        self.verticalHeader().setMinimumSectionSize(24)
         self.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.verticalHeader().verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        #self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+        self.entered.connect(self.emitCellEntered)
+
     def emitItemChanged(self, index: QModelIndex):
         self.cellChanged.emit(index.row(), index.column())
+
+    def emitCellEntered(self, index: QModelIndex):
+        self.cellEntered.emit(index.row(), index.column())
 
     def setModel(self, model: QAbstractItemModel) -> None:
         model.dataChanged.connect(self.emitItemChanged)
@@ -395,14 +449,63 @@ class MyTable(QTableView):
     def currentRow(self):
         return self.currentIndex().row()
 
+    def columnCount(self):
+        return self.model().columnCount()
+
     def setColumnCount(self, count: int):
         while count > self.model().columnCount():
             self.model().insertColumn(self.model().columnCount())
         while count < self.model().columnCount():
             self.model().removeColumn(self.model().columnCount() - 1)
 
-    def itemAt(self, point: QPoint):
-        pass
+    def rowCount(self):
+        return self.model().rowCount()
+
+    def setRowCount(self, count: int):
+        while count > self.model().rowCount():
+            self.model().insertRow(self.model().rowCount())
+        while count < self.model().rowCount():
+            self.model().removeRow(self.model().rowCount() - 1)
+
+    def itemAt(self, point: QPoint):  # TODO check if this works
+        return self.model().data(self.indexAt(point), Qt.ItemDataRole.DisplayRole)
+
+    def insertColumn(self, section: int):
+        self.model().insertColumn(section)
+
+    def removeColumn(self, section: int):
+        self.model().removeColumn(section)
+
+    def insertRow(self, section: int):
+        self.model().insertRow(section)
+        self.resizeRowToContents(section)
+
+    def removeRow(self, row: int):
+        self.model().removeRow(row)
+
+    def loadRow(self):
+        self.blockSignals(True)
+        self.model().loadRow()
+        self.blockSignals(False)
+
+    def getEmptyRows(self):
+        return self.model().getEmptyRows()
+
+    def setData(self, row, column, value):
+        self.model().setData(self.model().index(row, column), value, Qt.ItemDataRole.EditRole)
+
+    def setRowData(self, row: int, data: list):
+        self.model().setRowData(row, data)
+
+    def setAllData(self, data: list):
+        self.model().setAllData(data)
+        if not data:
+            self.verticalHeader().reset()
+        for i in range(50 if 50 > self.rowCount() else self.rowCount()):
+            self.resizeRowToContents(i)
+
+    def getData(self, row: int, column: int) -> str:
+        return self.model().data(self.model().index(row, column), Qt.ItemDataRole.DisplayRole)
 
     def selectedItems(self):
         return [self.model().data(index, Qt.ItemDataRole.DisplayRole) for index in self.selectedIndexes()]
@@ -415,12 +518,6 @@ class MyTable(QTableView):
 
     def setHorizontalHeaderItem(self, section: int, item: str):
         self.model().setHeaderData(section, Qt.Orientation.Horizontal, item)
-
-    def setRowCount(self, count: int):
-        while count > self.model().rowCount():
-            self.model().insertRow(self.model().rowCount())
-        while count < self.model().rowCount():
-            self.model().removeRow(self.model().rowCount() - 1)
 
     def setHorizontalHeaderLabels(self, labels: list):  # sets all labels up to length of "labels" excluding extras
         self.model().setHeaderData(0, Qt.Orientation.Horizontal, labels)
@@ -440,12 +537,20 @@ class MyTableModel(MySearchTableModel):
     def __init__(self, parent):
         super().__init__(parent)
 
+    def setRowData(self, row: int, rowData: list):
+        if row < len(self.tableData):
+            self.tableData[row] = rowData[1:]
+            self.dataChanged.emit(self.createIndex(row, 0), self.createIndex(row, self.columnAmount - 1),
+                                  [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+
     def setAllData(self, data: list) -> bool:
-        self.rowAmount = len(data) if len(data) < 50 else 50
-        self.columnAmount = len(data[0]) if len(data) > 0 else 0
+        self.parent().blockSignals(True)
+        self.loaded = False
+        self.rowAmount = len(data)
+        self.columnAmount = len(data[0]) - 1 if len(data) > 0 else 0
         if self.rowAmount == 0:
             self.beginResetModel()
-        self.tableData = [list(d) for d in data]
+        self.tableData = [list(d[1:]) for d in data]
         if self.rowAmount == 0:
             self.endResetModel()
         if len(self.hHeaderData) >= self.columnAmount:
@@ -454,21 +559,45 @@ class MyTableModel(MySearchTableModel):
         else:
             while len(self.hHeaderData) != self.columnAmount:
                 self.hHeaderData.append('')
-        if len(self.vHeaderData) >= self.rowAmount:
-            while len(self.vHeaderData) != self.rowAmount:
-                self.vHeaderData.pop()
-        else:
-            while len(self.vHeaderData) != self.rowAmount:
-                self.vHeaderData.append('')
-        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.columnAmount - 1, self.rowAmount - 1),
+        self.dataChanged.emit(self.createIndex(0, 0), self.createIndex(self.rowAmount - 1, self.columnAmount - 1),
                               [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
+        self.headerDataChanged.emit(Qt.Orientation.Vertical, 0, self.rowAmount - 1)
+        self.loadedRows = 50 if 50 > self.rowAmount else self.rowAmount
+        self.startBackgroundTimer()
+        self.parent().blockSignals(False)
         return True
 
-    def loadRow(self):
-        if self.rowAmount < len(self.tableData):
-            self.dataChanged.emit(self.createIndex(0, self.rowAmount), self.createIndex(self.columnAmount - 1, self.rowAmount),
-                                  [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole])
-            self.rowAmount += 1
+    def headerData(self, section: int, orientation: Qt.Orientation, role: int = ...):
+        if role == Qt.ItemDataRole.DisplayRole:
+            if orientation == Qt.Orientation.Horizontal:
+                return self.hHeaderData[section] if section < len(self.hHeaderData) else QVariant()
+            else:
+                return section + 1 if section < self.rowAmount else QVariant()
+
+        return QVariant()
+
+    def getEmptyRows(self):
+        del_rows = []
+
+        for row in range(len(self.tableData) - 1, -1, -1):
+            if all([x is None for x in self.tableData[row][1:]]):
+                del_rows.append(row + 1)
+
+        return del_rows
+
+    def insertRow(self, row: int, parent: QModelIndex = ...) -> bool:
+        self.beginInsertRows(QModelIndex(), row, row)
+        self.tableData.insert(row, [str() for i in range(self.columnAmount)])
+        self.endInsertRows()
+        self.rowAmount += 1
+        return True
+
+    def removeRow(self, row: int, parent: QModelIndex = ...) -> bool:
+        self.beginRemoveRows(QModelIndex(), row, row)
+        self.tableData.pop(row)
+        self.endRemoveRows()
+        self.rowAmount -= 1
+        return True
 
 
 class MyColorDialog(QColorDialog):
@@ -512,7 +641,7 @@ class MyHHeaderView(QHeaderView):
         geometry.setWidth(self.sectionSize(section_index) - 3)
         geometry.moveLeft(self.sectionViewportPosition(section_index))
         self.edit.setGeometry(geometry)
-        self.edit.setText(self.model().headerData(section_index, Qt.Orientation.Horizontal))
+        self.edit.setText(self.model().headerData(section_index, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole))
         self.edit.setHidden(False)
         self.edit.blockSignals(False)
         self.edit.setFocus()

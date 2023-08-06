@@ -1,4 +1,4 @@
-from PyQt6.QtCore import QStringListModel, Qt, QModelIndex, QAbstractTableModel, QVariant
+from PyQt6.QtCore import QStringListModel, Qt, QModelIndex, QAbstractTableModel, QVariant, QTimer
 from PyQt6.QtGui import QFont, QAction, QCursor, QKeySequence, QKeyEvent
 from PyQt6.QtWidgets import QLineEdit, QPushButton, QWidget, QLabel, QListWidget, QComboBox, QVBoxLayout, QHBoxLayout, \
     QFormLayout, QSizePolicy, QCompleter, QTableWidget, QHeaderView, QTableWidgetItem, QMenu, QGridLayout, \
@@ -63,6 +63,8 @@ class DbNameInputWindow(QWidget):
             if not cont:
                 return
             self.window.read_settings()  # I don't understand what this is for
+        while name in self.window.databases_names.keys():
+            name = name + "(1)"
         self.window.databases.append(Database(name))
         self.window.databases_names[name] = self.window.database_amount
         self.window.database_amount = len(self.window.databases)
@@ -155,7 +157,7 @@ class OpenDbWindow(QWidget):
                 self.setFocus()
                 return
             self.window.read_settings()  # I'm confused about why this is necessary: saving writes all settings,
-                                            # so then why read them?
+            # so then why read them?
         temp = self.list_view.currentItem()
         item = temp.text()
         temp = self.window.databases_names.pop(item)
@@ -163,7 +165,7 @@ class OpenDbWindow(QWidget):
         self.window.change_current_database(item)
         self.close()
 
-    def delete_database(self):
+    def delete_database(self):  # TODO Currently broken
         name = self.list_view.currentItem().text()
         ret = QMessageBox.warning(self, "Delete", f"Are you sure you would like to delete "
                                                   f"{name}? \n Deleting a Database is permanent",
@@ -319,20 +321,15 @@ class SearchWindow(QWidget):
 
         # setting up table to update database
         self.search_table = MySearchTable()
-        #self.search_table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        #self.search_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        #self.search_table.verticalHeader().setMinimumSectionSize(24)
-        #self.search_table.setSortingEnabled(True)
         self.search_table.cellChanged.connect(self.update_database)
         self.search_table.itemSelectionChanged.connect(self.change_selected)
 
         # setting header context menu
         self.search_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        # self.search_table.verticalHeader().setResizeContentsPrecision(0)
+        # self.search_table.horizontalHeader().setResizeContentsPrecision(0)
         self.search_table.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.search_table.verticalHeader().customContextMenuRequested.connect(self.open_context)
-        # accounting for tab irregularities useless
-        # self.tableFilter = self.window.TableFilter(self.search_table)
-        # self.search_table.installEventFilter(self.tableFilter)
         # making context menus
         self.make_context_menus()
 
@@ -343,6 +340,7 @@ class SearchWindow(QWidget):
         self.setLayout(layout)
 
     def search_database(self, text):
+        self.search_table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.search_table.blockSignals(True)
         if len(text) < 2:  # If nothing is the search bar, passes search and restores default
             self.search_table.clearData()
@@ -352,28 +350,17 @@ class SearchWindow(QWidget):
             self.search_table.clearData()
             return
         # print(search_query)
-        #self.search_table.setColumnCount(len(search_query[0]))
-        #self.search_table.setRowCount(len(search_query))
         self.search_table.setAllData(search_query)  # in current model this has to go first
         self.search_table.setHorizontalHeaderLabels(
             self.window.databases[self.window.current_database].get_column_headers())
         self.search_table.setVerticalHeaderLabels([str(row[0]) for row in search_query])
         self.search_table.horizontalHeader().hideSection(0)
-        #self.search_table.model().setItemData()
-        #for row in range(len(search_query)):  # assigning queried statement to cells
-            #count = 0
-            #for cell in search_query[row]:
-                #if cell is None:
-                    #cell = ''
-                #item = QTableWidgetItem(str(cell))
-                #self.search_table.setItem(row, count, item)
-                #count += 1
-                #if count % 10 == 0:
-                    #self.repaint()
         for i, size in enumerate(
                 self.window.header_sizes[self.window.databases[self.window.current_database].name[:-3]]):
             self.search_table.horizontalHeader().resizeSection(i + 1, size)
         self.search_table.blockSignals(False)
+        QTimer().singleShot(100, lambda: self.search_table.verticalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Fixed))
 
     def autofill(self, search_text):
         if not search_text:
@@ -385,8 +372,11 @@ class SearchWindow(QWidget):
         self.search_bar.setFocus()
 
     def update_database(self, row, column):
-        self.window.update_cell(int(self.search_table.getData(row, 0)) - self.window.table_query_start, column - 1,
+        self.search_table.resizeRowToContents(row)
+        self.window.update_cell(int(self.search_table.getData(row, 0)) - 1, column - 1,
                                 self.search_table.currentItem() if self.search_table.currentItem() else '')
+        self.window.table.setData(int(self.search_table.getData(row, 0)), column - 1,
+                                  self.search_table.currentItem() if self.search_table.currentItem() else '')
 
     def change_selected(self):
         self.blockSignals(True)
@@ -416,7 +406,6 @@ class SearchWindow(QWidget):
     def closeEvent(self, event) -> None:
         self.hide()
         self.window.setEnabled(True)
-        self.window.query_database(query=True)
         event.accept()
 
 

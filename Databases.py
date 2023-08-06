@@ -1,6 +1,9 @@
 import sqlite3 as sql
 import shutil as shu
+import datetime
 import os
+import sys
+
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 
 
@@ -23,6 +26,7 @@ class Querier(QObject):
 class Database:
     def __init__(self, name):  # Main table is made with creation of class instance
         super().__init__()
+        self.skip = False
         self.name = name + '.db'
         self.text_table_count = 1  # defines current name for text tables in column creation
         self.list_table_count = 1  # defines current name for list tables in column creation
@@ -33,7 +37,6 @@ class Database:
         self.to_delete = []
         self.common_query = "SELECT Main._id"
         self.thread = None
-        self.temp = None
 
         con = sql.connect(self.name)
         cur = con.cursor()
@@ -49,6 +52,9 @@ class Database:
 
     def copy_database(self):
         shu.copy(self.name, "temp.db")
+
+    def backup_database(self, num):
+        shu.copy(self.name, fr'backups\{self.name}{str(num)}')
 
     def not_saved(self):
         shu.copy("temp.db", self.name)
@@ -79,6 +85,13 @@ class Database:
     def delete_column(self, c_id):
         self.column_classes[c_id].delete_column(self.name)
         self.column_classes.remove(self.column_classes[c_id])
+        if not self.column_classes:
+            con = sql.connect(self.name)
+            cur = con.cursor()
+            cur.execute(f'DELETE FROM Main WHERE _id > 0')
+            cur.execute(f'DELETE FROM "sqlite_sequence" WHERE "name" = "Main"')
+            con.commit()
+            con.close()
 
     def move_column(self, oIndex, nIndex):
         t_column = self.column_classes.pop(oIndex)
@@ -90,6 +103,8 @@ class Database:
             if column.table_name[1] == "T":
                 column.delete_row(self.name, old_val)
             elif column.table_name[1] == "L":
+                if old_val is None:
+                    old_val = ""
                 column.delete_row(self.name, old_val.split(", "), old_val.split(", "), r_id)
                 con = sql.connect(self.name)
                 cur = con.cursor()
@@ -103,17 +118,8 @@ class Database:
         cur.execute(f'DELETE FROM "sqlite_sequence" WHERE "name" = "Main"')
         con.commit()
         con.close()
-        self.temp.pop(r_id - 1)
-        self.background_query()
 
-    def clear_empty_rows(self):
-
-        del_rows = []
-
-        for row in range(len(self.temp) - 1, -1, -1):
-            if all([x is None for x in self.temp[row][1:]]):
-                del_rows.append(row + 1)
-
+    def clear_empty_rows(self, del_rows: list):  # needs to be moved to model
         for row in del_rows:
             self.delete_row([None for i in range(len(self.column_classes))], row)
 
@@ -127,11 +133,6 @@ class Database:
 
     def update_column(self, c_id, r_id, old_value, new_value):
         self.column_classes[c_id].update(self.name, old_value, new_value, r_id)
-        if self.temp is not None and self.temp[r_id - 1] is not None:  # safeguards
-            self.temp[r_id - 1] = [i if num != c_id + 1 else new_value for num, i in enumerate(self.temp[r_id - 1])]
-        else:
-            pass
-            # print(self.temp)
 
     def add_defaults(self):
         self.row_count += 1
@@ -143,9 +144,6 @@ class Database:
                 cur.execute(f'INSERT INTO {column.link_table_name} (_main_id) VALUES ((SELECT MAX(_id) FROM Main))')
         con.commit()
         con.close()
-        if self.temp is not None:
-            self.temp.append([None if i != 0 else len(self.temp) + 1 for i in range(len(self.column_classes) + 1)])
-            # print(self.temp)
 
     def get_column_headers(self) -> list:
         return ["id"] + [column.column_name[2:-1] for column in self.column_classes]
@@ -192,12 +190,11 @@ class Database:
                                  f' '
                 on_parameters += f'Main._id = {column.table_name}._main_id AND '
         self.common_query = fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
-        if self.thread is None or (self.temp is None and not self.thread.isRunning()):
-            self.background_query()
         print("common query generated")
 
-    def background_query(self):  # runs background query to retrieve whole database
-        if self.common_query:
+    def background_query(self, table=None):  # runs background query to retrieve whole database
+        if self.common_query and not self.skip and self.row_count > 0:
+            self.skip = True
             self.thread = QThread()
             self.worker = Querier(self.common_query, self.name)
             self.worker.moveToThread(self.thread)
@@ -206,18 +203,18 @@ class Database:
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
-            self.worker.finished.connect(self.set_temp)
+            if table is not None:  # temporary, not sure if it is necessary
+                self.worker.finished.connect(table.setAllData)
+            self.worker.finished.connect(self.resetSkip)
 
             self.thread.start()
+        elif self.row_count == 0:
+            table.setAllData([])
 
-    def set_temp(self, temp):
-        self.temp = temp
-        # print(temp)
+    def resetSkip(self):
+        self.skip = False
 
-    def general_query(self, start: int, end: int, search=False, q=False):  # search holds the text to search for. start/end will
-        if self.temp is not None and not search and not q:  # new list column doesn't return main.id until restart?
-            return self.temp[start - 1:(end if end < self.row_count else self.row_count)]
-            # return [self.temp[a - 1] for a in range(start, (end + 1) if end < self.row_count else self.row_count + 1)]
+    def general_query(self, start: int, end: int, search=False):  # search holds the text to search for. start/end will
         con = sql.connect(self.name)
         cur = con.cursor()
         if not search:
@@ -252,8 +249,6 @@ class Database:
             query = cur.execute(fr'SELECT Main._id, {select_table_columns[:-2]} FROM Main {joined_tables} {on_parameters[:-4]} '
                                 fr'{where}').fetchall()
         con.close()
-        if self.thread is None or q or (self.temp is None and not self.thread.isRunning()):
-            self.background_query()  # there is still the possiblility q is set to true twice, but it hasn't happened yet
         return query
 
 
@@ -464,7 +459,7 @@ class ColumnList(Column):
 
         con = sql.connect(db_name)
         cur = con.cursor()
-        if old_value != [''] and old_value is not None:
+        if old_value != ['']:
             for v in o_value:
                 temp = count_values_uses(v)
                 delete_from_link_table(v)

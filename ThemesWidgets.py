@@ -204,8 +204,17 @@ class EditThemes(QWidget):
         self.window_preview.setPalette(self.preview_palette)
 
     def apply_palette(self):
+        if self.window.current_database is not None and self.window.databases[self.window.current_database].skip is True:
+            self.window.databases[self.window.current_database].thread.quit()
+
+        if self.window_preview.current_database is not None and self.window_preview.databases[self.window_preview.current_database].skip is True:
+            self.window_preview.databases[self.window_preview.current_database].thread.quit()
         settings = QSettings(r'settings.ini', QSettings.Format.IniFormat)
         settings.beginGroup("themes")
+        if self.window.databases[self.window.current_database].skip is True:
+            self.window.databases[self.window.current_database].thread.quit()
+        self.window.databases[self.window.current_database].thread = None
+        self.window.databases[self.window.current_database].worker = None
         settings.setValue("palette", [self.preview_palette.background, self.preview_palette.text,
                                       self.preview_palette.highlight])
         settings.endGroup()
