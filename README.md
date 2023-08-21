@@ -1,6 +1,6 @@
 Database Project
 ===============
-A simple database management system designed for the general user
+A database management software designed for the general user
 
 Features
 ------------
