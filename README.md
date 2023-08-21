@@ -8,3 +8,6 @@ Features
 - Robust data storage system
 - Provides the ability to search data
 - Gives the option for user customization
+
+Requirements:
+  - PyQt version 6.3.1
