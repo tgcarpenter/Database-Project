@@ -61,13 +61,18 @@ class MainWindow(QMainWindow):
         self.signalMapper = QSignalMapper(self)
         self.signalMapper.mappedInt.connect(self.update_cell)
 
-        # making menu bars
+        # making menu bar
         self.file_menu = FileMenu(self)
         self.menuBar().addMenu(self.file_menu)
         self.edit_menu = EditMenu(self)
         self.menuBar().addMenu(self.edit_menu)
         self.tool_menu = ToolMenu(self)
         self.menuBar().addMenu(self.tool_menu)
+        self.about_menu = QMenu("About", self)
+        lic = QAction("License", self.about_menu)
+        lic.triggered.connect(self.show_license)
+        self.about_menu.addAction(lic)
+        self.menuBar().addMenu(self.about_menu)
 
         # making table
         self.table = MyTable()
@@ -792,6 +797,9 @@ class MainWindow(QMainWindow):
         self.write_settings()
         self.databases[self.current_database].copy_database()
 
+    def export(self):
+        self.databases[self.current_database].export_data()
+
     def closeEvent(self, event):
         print(self.databases_names, self.databases, self.current_database)
         close = self.open_save_messagebox()
@@ -854,6 +862,10 @@ class MainWindow(QMainWindow):
         self.setDisabled(True)
         self.window7 = EditThemes(self)
         self.window7.show()
+
+    @staticmethod
+    def show_license():
+        QDesktopServices.openUrl(QUrl.fromLocalFile("LICENSE.txt"))
 
     def eventFilter(self, a0: 'QObject', a1: 'QWheelEvent') -> bool:
         if a1.type() == QEvent.Type.Wheel:
